@@ -320,14 +320,7 @@ function loadImage(url) {
 
 function getSourceImage(node) {
   try {
-    // 1. a node sajat image combo widgetje (file-loader mod, mint a LoadImage)
-    const w = (node.widgets || []).find((w) => w.name === "image");
-    if (w && w.value && typeof w.value === "string") {
-      // az ertek tartalmazhat subfoldert is ("mappa/fajl.png")
-      const seg = w.value.split("/");
-      return { filename: seg.pop(), subfolder: seg.join("/"), type: "input" };
-    }
-    // 2. bemeneti link (kompatibilitas regmenti workflowkkal)
+    // 1. bekotott IMAGE bemenet (image_opt) -> ez felulirja a dropdown-t
     for (const inp of node.inputs || []) {
       if (inp.type !== "IMAGE" || !inp.link) continue;
       const link = app.graph.links[inp.link];
@@ -336,6 +329,13 @@ function getSourceImage(node) {
       if (out && out.images && out.images.length) {
         return out.images.find((i) => i.type === "output") || out.images[0];
       }
+    }
+    // 2. a node sajat image combo widgetje (file-loader mod, mint a LoadImage)
+    const w = (node.widgets || []).find((w) => w.name === "image");
+    if (w && w.value && typeof w.value === "string") {
+      // az ertek tartalmazhat subfoldert is ("mappa/fajl.png")
+      const seg = w.value.split("/");
+      return { filename: seg.pop(), subfolder: seg.join("/"), type: "input" };
     }
     // 3. a node-on megjelenitett preview (feltoltes utan)
     if (node.images && node.images.length) return node.images[0];
