@@ -1,0 +1,15 @@
+[project]
+name = "comfyui-fastmask"
+description = "Very fast canvas-based mask editor for ComfyUI: dirty-rect rendering, preview-resolution painting with full-res export, tile-based undo/redo."
+version = "0.1.0"
+license = { text = "MIT" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/zaum/ComfyUI-FastMask"
+
+[tool.comfy]
+PublisherId = "zaum"
+DisplayName = "ComfyUI FastMask"
+Icon = ""
+Tags = ["mask", "maskeditor", "inpaint", "fast"]
