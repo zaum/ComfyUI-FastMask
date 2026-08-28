@@ -272,6 +272,25 @@ async function openEditor(node) {
   ui.fillToggle.classList.toggle("active", st.autoFill);
   ui.stSize.textContent = fullW + " \u00D7 " + fullH + (f < 1 ? "  (preview " + pw + "\u00D7" + ph + ")" : "");
 
+  // korabban festett maszk visszaallitasa a mask_path-rol (ha van)
+  (async () => {
+    const mw = (node.widgets || []).find((w) => w.name === "mask_path");
+    if (!mw || !mw.value) return;
+    try {
+      const seg = String(mw.value).split("/");
+      const mf = seg.pop();
+      const mimg = await loadImage(api.apiURL("/view?" + new URLSearchParams({
+        filename: mf,
+        subfolder: seg.join("/"),
+        type: "input",
+      })));
+      if (!st) return; // kozben bezartak az editort
+      mctx.clearRect(0, 0, pw, ph);
+      mctx.drawImage(mimg, 0, 0, pw, ph);
+      st.dirty.push({ x: 0, y: 0, w: pw, h: ph });
+    } catch (e) { /* nincs mentett maszk, megyunk uresen */ }
+  })();
+
   makeHatch();
   fitView();
   updateToolbar();
@@ -301,6 +320,14 @@ function loadImage(url) {
 
 function getSourceImage(node) {
   try {
+    // 1. a node sajat image combo widgetje (file-loader mod, mint a LoadImage)
+    const w = (node.widgets || []).find((w) => w.name === "image");
+    if (w && w.value && typeof w.value === "string") {
+      // az ertek tartalmazhat subfoldert is ("mappa/fajl.png")
+      const seg = w.value.split("/");
+      return { filename: seg.pop(), subfolder: seg.join("/"), type: "input" };
+    }
+    // 2. bemeneti link (kompatibilitas regmenti workflowkkal)
     for (const inp of node.inputs || []) {
       if (inp.type !== "IMAGE" || !inp.link) continue;
       const link = app.graph.links[inp.link];
@@ -310,6 +337,8 @@ function getSourceImage(node) {
         return out.images.find((i) => i.type === "output") || out.images[0];
       }
     }
+    // 3. a node-on megjelenitett preview (feltoltes utan)
+    if (node.images && node.images.length) return node.images[0];
   } catch (e) { /* ignore */ }
   return null;
 }

@@ -15,9 +15,12 @@ ComfyUI újraindítás után keresd a **`FastMask Editor`** node-ot a `mask` kat
 
 ## Használat
 
-1. Kötsd be a node `image` bemenetét (pl. LoadImage / VAE Decode után).
+A node egyben **képbetöltő is** (mint a gyári LoadImage):
+
+1. A node `image` dropdownjában válaszd ki a képet a ComfyUI input mappából, vagy tölts fel képet közvetlenül a node-ra (a beépített **feltöltés** gombbal).
 2. A node-on lévő **🖌 FastMask Editor** gombbal (vagy jobb klikk → *Open in FastMask Editor*) nyisd meg a full-screen editort.
-3. Fess, majd **OK** – a maszk full felbontásban elmentődik a `ComfyUI/input/fastmask/` mappába, a node pedig `MASK` outputot ad (1.0 = maszkolt terület).
+3. Fess, majd **OK** – a maszk full felbontásban elmentődik a `ComfyUI/input/fastmask/` mappába, az editor újramegnyitásakor a korábbi maszk **visszatöltődik** és tovább szerkeszthető.
+4. A node két outputot ad: `IMAGE` (a betöltött kép) és `MASK` (1.0 = maszkolt terület). A futtatás után a node-on megjelenik a kép előnézete.
 
 ## Funkciók
 
