@@ -25,7 +25,7 @@ import { api } from "../../scripts/api.js";
 const TILE = 256;          // undo/redo csempe meret (preview px)
 const MAX_PREVIEW = 2048;  // max preview felbontas (a vegeredmeny full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.0.2"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.2
+const FM_VERSION = "1.0.3"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.3
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION; // verzio a gombon - diagnosztika
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -938,34 +938,79 @@ function fmLog(...args) {
 }
 window.__fastmaskDebug = fmLog;
 
+function fmEditorClick(node) {
+  try {
+    Promise.resolve(openEditor(node)).catch((err) => {
+      console.error("[FastMask] editor megnyitas hiba:", err);
+      try { toast("FastMask", "Editor hiba: " + err.message, "error"); } catch (e2) {}
+    });
+  } catch (err) {
+    console.error("[FastMask] editor megnyitas hiba:", err);
+    try { alert("[FastMask] hiba: " + err.message); } catch (e2) {}
+  }
+}
+
+function makeOpenButtonEl(node) {
+  const el = document.createElement("button");
+  el.type = "button";
+  el.textContent = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
+  el.style.cssText =
+    "display:block;width:100%;height:100%;box-sizing:border-box;" +
+    "background:#2a2a2a;color:#eee;border:1px solid #555;border-radius:6px;" +
+    "cursor:pointer;font-size:13px;padding:4px 10px;font-family:inherit;text-align:center";
+  el.addEventListener("mouseenter", () => { el.style.background = "#3a3a3a"; el.style.borderColor = "#777"; });
+  el.addEventListener("mouseleave", () => { el.style.background = "#2a2a2a"; el.style.borderColor = "#555"; });
+  el.addEventListener("pointerdown", (e) => e.stopPropagation()); // ne huzza a node-ot
+  el.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); fmEditorClick(node); });
+  return el;
+}
+
 function addOpenButton(node) {
   // idempotens: ne keruljon fel ketto gomb
-  if (!node || !node.addWidget) return;
+  if (!node) return;
   const widgets = node.widgets || [];
   const existing = widgets.find((w) => w.name === "fastmask_open");
   if (existing) {
     // regi scripttel letrejott gomb: cimke frissitese az aktualis verzióra,
     // hogy latszodjon, melyik JS fut
-    try { existing.label = BTN_LABEL; } catch (e) {}
+    try {
+      if (existing.element && existing.element.tagName === "BUTTON") {
+        existing.element.textContent = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
+      } else {
+        existing.label = BTN_LABEL;
+      }
+    } catch (e) {}
     return;
   }
-  const w = node.addWidget("button", BTN_LABEL, null, () => {
+
+  // ELSODLEGES: valodi HTML button DOM widgetkent - ez mindig latszik es
+  // kattinthat, fuggetlenul a litegraph canvas widget-rajzolastol
+  if (typeof node.addDOMWidget === "function") {
     try {
-      Promise.resolve(openEditor(node)).catch((err) => {
-        console.error("[FastMask] editor megnyitas hiba:", err);
-        try { toast("FastMask", "Editor hiba: " + err.message, "error"); } catch (e2) {}
-      });
-    } catch (err) {
-      console.error("[FastMask] editor megnyitas hiba:", err);
-      try { alert("[FastMask] hiba: " + err.message); } catch (e2) {}
+      const el = makeOpenButtonEl(node);
+      const w = node.addDOMWidget("fastmask_open", "", el, { serialize: false });
+      if (w) {
+        w.label = "";
+        try { w.computeSize = () => [0, 32]; } catch (e) {}
+        if (w.serializeValue) w.serializeValue = () => undefined;
+        if ("serialize" in w) w.serialize = false;
+        fmLog("DOM gomb hozzaadva:", node.id, node.comfyClass || node.type);
+        return;
+      }
+    } catch (e) {
+      console.warn("[FastMask] DOM widget sikertelen, canvas button-re esik vissza:", e);
     }
-  });
+  }
+
+  // TARTALEK: litegraph canvas button (ha addDOMWidget nem elerheto)
+  if (!node.addWidget) return;
+  const w = node.addWidget("button", BTN_LABEL, null, () => fmEditorClick(node));
   if (w) {
     w.name = "fastmask_open";
     try { w.label = BTN_LABEL; } catch (e) {}
     if (w.serializeValue) w.serializeValue = () => undefined;
     if ("serialize" in w) w.serialize = false;
-    fmLog("gomb hozzaadva:", node.id, node.comfyClass || node.type);
+    fmLog("canvas gomb hozzaadva:", node.id, node.comfyClass || node.type);
   }
 }
 
