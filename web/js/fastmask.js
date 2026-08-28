@@ -25,7 +25,8 @@ import { api } from "../../scripts/api.js";
 const TILE = 256;          // undo/redo csempe meret (preview px)
 const MAX_PREVIEW = 2048;  // max preview felbontas (a vegeredmeny full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.0.1"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.1
+const FM_VERSION = "1.0.2"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.2
+const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION; // verzio a gombon - diagnosztika
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
 const MOD = isMac ? "\u2318" : "Ctrl";
@@ -941,10 +942,27 @@ function addOpenButton(node) {
   // idempotens: ne keruljon fel ketto gomb
   if (!node || !node.addWidget) return;
   const widgets = node.widgets || [];
-  if (widgets.some((w) => w.name === "fastmask_open")) return;
-  const w = node.addWidget("button", "\uD83D\uDD8C FastMask Editor", null, () => openEditor(node));
+  const existing = widgets.find((w) => w.name === "fastmask_open");
+  if (existing) {
+    // regi scripttel letrejott gomb: cimke frissitese az aktualis verzióra,
+    // hogy latszodjon, melyik JS fut
+    try { existing.label = BTN_LABEL; } catch (e) {}
+    return;
+  }
+  const w = node.addWidget("button", BTN_LABEL, null, () => {
+    try {
+      Promise.resolve(openEditor(node)).catch((err) => {
+        console.error("[FastMask] editor megnyitas hiba:", err);
+        try { toast("FastMask", "Editor hiba: " + err.message, "error"); } catch (e2) {}
+      });
+    } catch (err) {
+      console.error("[FastMask] editor megnyitas hiba:", err);
+      try { alert("[FastMask] hiba: " + err.message); } catch (e2) {}
+    }
+  });
   if (w) {
     w.name = "fastmask_open";
+    try { w.label = BTN_LABEL; } catch (e) {}
     if (w.serializeValue) w.serializeValue = () => undefined;
     if ("serialize" in w) w.serialize = false;
     fmLog("gomb hozzaadva:", node.id, node.comfyClass || node.type);
