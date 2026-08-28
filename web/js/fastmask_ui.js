@@ -25,7 +25,7 @@ import { api } from "../../scripts/api.js";
 const TILE = 256;          // undo/redo csempe meret (preview px)
 const MAX_PREVIEW = 2048;  // max preview felbontas (a vegeredmeny full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.0.3"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.3
+const FM_VERSION = "1.0.4"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.4
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION; // verzio a gombon - diagnosztika
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -969,26 +969,19 @@ function addOpenButton(node) {
   // idempotens: ne keruljon fel ketto gomb
   if (!node) return;
   const widgets = node.widgets || [];
-  const existing = widgets.find((w) => w.name === "fastmask_open");
-  if (existing) {
-    // Ha mar letezik gomb, de az regi canvas-button (DOM element nelkul,
-    // egyes frontend verziokon nem kattintható), csere valodi HTML gombra.
-    if (!existing.element && typeof node.addDOMWidget === "function") {
-      try {
-        const idx = widgets.indexOf(existing);
-        if (idx !== -1) widgets.splice(idx, 1);
-        fmLog("regi canvas gomb eltavositva, DOM gomb kerul helyette:", node.id);
-      } catch (e) {}
-    } else {
-      // cimke frissitese az aktualis verzióra, hogy latszodjon, melyik JS fut
-      try {
-        if (existing.element && existing.element.tagName === "BUTTON") {
-          existing.element.textContent = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
-        } else {
-          existing.label = BTN_LABEL;
-        }
-      } catch (e) {}
-      return;
+
+  // TISZTITAS: minden stale FastMask widget eltavositasa (regi canvas gomb,
+  // cache-elt JS-bol maradt widget barmilyen neven, amiben fastmask szerepel,
+  // de nem a mi aktualis DOM gombunk)
+  for (let i = widgets.length - 1; i >= 0; i--) {
+    const w = widgets[i];
+    if (!w) continue;
+    const nameMatch = String(w.name || "").toLowerCase().indexOf("fastmask") !== -1;
+    const labelMatch = String(w.label || w.name || "").toLowerCase().indexOf("fastmask") !== -1;
+    const isOurs = w.name === "fastmask_open" && w.element && w.element.tagName === "BUTTON";
+    if ((nameMatch || labelMatch) && !isOurs) {
+      widgets.splice(i, 1);
+      fmLog("stale FastMask widget eltavositva:", w.name || w.label || "(nvtelen)");
     }
   }
 
