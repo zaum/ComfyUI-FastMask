@@ -25,6 +25,7 @@ import { api } from "../../scripts/api.js";
 const TILE = 256;          // undo/redo csempe meret (preview px)
 const MAX_PREVIEW = 2048;  // max preview felbontas (a vegeredmeny full-res)
 const MAX_UNDO = 40;
+const FM_VERSION = "1.0.1"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.1
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
 const MOD = isMac ? "\u2318" : "Ctrl";
@@ -1015,4 +1016,4 @@ app.registerExtension({
     }
   },
 });
-fmLog("script betoltve");
+fmLog("script betoltve, verzió: v" + FM_VERSION);
