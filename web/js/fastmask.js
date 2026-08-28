@@ -971,16 +971,25 @@ function addOpenButton(node) {
   const widgets = node.widgets || [];
   const existing = widgets.find((w) => w.name === "fastmask_open");
   if (existing) {
-    // regi scripttel letrejott gomb: cimke frissitese az aktualis verzióra,
-    // hogy latszodjon, melyik JS fut
-    try {
-      if (existing.element && existing.element.tagName === "BUTTON") {
-        existing.element.textContent = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
-      } else {
-        existing.label = BTN_LABEL;
-      }
-    } catch (e) {}
-    return;
+    // Ha mar letezik gomb, de az regi canvas-button (DOM element nelkul,
+    // egyes frontend verziokon nem kattintható), csere valodi HTML gombra.
+    if (!existing.element && typeof node.addDOMWidget === "function") {
+      try {
+        const idx = widgets.indexOf(existing);
+        if (idx !== -1) widgets.splice(idx, 1);
+        fmLog("regi canvas gomb eltavositva, DOM gomb kerul helyette:", node.id);
+      } catch (e) {}
+    } else {
+      // cimke frissitese az aktualis verzióra, hogy latszodjon, melyik JS fut
+      try {
+        if (existing.element && existing.element.tagName === "BUTTON") {
+          existing.element.textContent = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
+        } else {
+          existing.label = BTN_LABEL;
+        }
+      } catch (e) {}
+      return;
+    }
   }
 
   // ELSODLEGES: valodi HTML button DOM widgetkent - ez mindig latszik es
