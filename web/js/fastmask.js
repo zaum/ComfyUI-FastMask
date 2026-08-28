@@ -931,6 +931,11 @@ async function saveAndClose() {
 }
 
 /* --------------------------- ComfyUI extension --------------------------- */
+function fmLog(...args) {
+  try { console.log("%c[FastMask]", "color:#4a90d9;font-weight:bold", ...args); } catch (e) {}
+}
+window.__fastmaskDebug = fmLog;
+
 function addOpenButton(node) {
   // idempotens: ne keruljon fel ketto gomb
   if (!node || !node.addWidget) return;
@@ -941,19 +946,36 @@ function addOpenButton(node) {
     w.name = "fastmask_open";
     if (w.serializeValue) w.serializeValue = () => undefined;
     if ("serialize" in w) w.serialize = false;
+    fmLog("gomb hozzaadva:", node.id, node.comfyClass || node.type);
   }
 }
 
 function isFastMaskNode(node) {
   if (!node) return false;
-  return node.comfyClass === "FastMaskEditor" || node.constructor?.name === "FastMaskEditor" ||
+  return node.comfyClass === "FastMaskEditor" ||
+    node.constructor?.name === "FastMaskEditor" ||
+    (String(node.type || "").indexOf("FastMaskEditor") !== -1) ||
     (node.getTitle ? String(node.getTitle()).indexOf("FastMask") !== -1 : false);
+}
+
+function scanExistingNodes() {
+  try {
+    const nodes = (app.graph && app.graph._nodes) || [];
+    let n = 0;
+    for (const node of nodes) {
+      if (isFastMaskNode(node)) { addOpenButton(node); n++; }
+    }
+    if (n) fmLog("meglvo FastMask node-ok frissitve:", n);
+  } catch (e) {
+    console.warn("[FastMask] graph scan failed:", e);
+  }
 }
 
 app.registerExtension({
   name: "FastMask.Editor",
   beforeRegisterNodeDef(nodeType, nodeData) {
     if (!nodeData || nodeData.name !== "FastMaskEditor") return;
+    fmLog("node regisztralva a frontend fele:", nodeData.name);
 
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
@@ -977,4 +999,20 @@ app.registerExtension({
   nodeCreated(node) {
     if (isFastMaskNode(node)) addOpenButton(node);
   },
+  // harmadik biztositek: workflow betoltes / grafikonvaltas utan is ranezunk
+  // a grafikonban mar meglevo node-okra
+  setup() {
+    fmLog("extension betoltve, node-ok atvizsgalasa...");
+    scanExistingNodes();
+    // workflow-betoltes utan is fusson le (a setup egyszer fut csak)
+    const origConfigure = app.configureGraph ? app.configureGraph.bind(app) : null;
+    if (origConfigure) {
+      app.configureGraph = function () {
+        const r = origConfigure.apply(null, arguments);
+        scanExistingNodes();
+        return r;
+      };
+    }
+  },
 });
+fmLog("script betoltve");
