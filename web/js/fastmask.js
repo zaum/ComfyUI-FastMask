@@ -902,6 +902,25 @@ async function saveAndClose() {
 }
 
 /* --------------------------- ComfyUI extension --------------------------- */
+function addOpenButton(node) {
+  // idempotens: ne keruljon fel ketto gomb
+  if (!node || !node.addWidget) return;
+  const widgets = node.widgets || [];
+  if (widgets.some((w) => w.name === "fastmask_open")) return;
+  const w = node.addWidget("button", "\uD83D\uDD8C FastMask Editor", null, () => openEditor(node));
+  if (w) {
+    w.name = "fastmask_open";
+    if (w.serializeValue) w.serializeValue = () => undefined;
+    if ("serialize" in w) w.serialize = false;
+  }
+}
+
+function isFastMaskNode(node) {
+  if (!node) return false;
+  return node.comfyClass === "FastMaskEditor" || node.constructor?.name === "FastMaskEditor" ||
+    (node.getTitle ? String(node.getTitle()).indexOf("FastMask") !== -1 : false);
+}
+
 app.registerExtension({
   name: "FastMask.Editor",
   beforeRegisterNodeDef(nodeType, nodeData) {
@@ -910,7 +929,7 @@ app.registerExtension({
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
-      this.addWidget("button", "\uD83D\uDD8C FastMask Editor", null, () => openEditor(this));
+      addOpenButton(this);
       return r;
     };
 
@@ -923,5 +942,10 @@ app.registerExtension({
       });
       return r;
     };
+  },
+  // masodik biztositek: minden letrehozott node-ra ranezunk (ha a fenti
+  // wrapper masik extension altal felulirasra kerult, itt is hozzaadodik)
+  nodeCreated(node) {
+    if (isFastMaskNode(node)) addOpenButton(node);
   },
 });
