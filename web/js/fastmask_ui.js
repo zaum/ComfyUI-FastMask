@@ -22,6 +22,21 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+/* --- LEGELSO SOROS DIAGNOSZTIKA: ha a script barmikor lefut, ez latszik --- */
+try {
+  const fmEarlyBadge = document.createElement("div");
+  fmEarlyBadge.id = "fastmask-load-badge";
+  fmEarlyBadge.textContent = "FastMask v1.0.5 script LEFUTOTT";
+  fmEarlyBadge.style.cssText =
+    "position:fixed;left:8px;bottom:8px;z-index:999999;" +
+    "background:#1e4620;color:#b6f0b6;border:1px solid #4a4;" +
+    "font:11px/1.4 monospace;padding:4px 8px;border-radius:4px;" +
+    "pointer-events:none;opacity:0.9;";
+  if (document.body) document.body.appendChild(fmEarlyBadge);
+  else document.addEventListener("DOMContentLoaded", () => document.body.appendChild(fmEarlyBadge));
+} catch (e) {}
+/* -------------------------------------------------------------------------- */
+
 const TILE = 256;          // undo/redo csempe meret (preview px)
 const MAX_PREVIEW = 2048;  // max preview felbontas (a vegeredmeny full-res)
 const MAX_UNDO = 40;
@@ -1085,18 +1100,10 @@ app.registerExtension({
 });
 
 /* -------- kepernyore iras diagnosztika (console nelkul is lathato) -------- */
-let badgeEl = null;
 function updateBadge() {
   try {
-    if (!badgeEl) {
-      badgeEl = document.createElement("div");
-      badgeEl.style.cssText =
-        "position:fixed;left:8px;bottom:8px;z-index:999999;" +
-        "background:#1e4620;color:#8f8;color:#b6f0b6;border:1px solid #4a4;" +
-        "font:11px/1.4 monospace;padding:4px 8px;border-radius:4px;" +
-        "pointer-events:none;opacity:0.9;";
-      document.body.appendChild(badgeEl);
-    }
+    badgeEl = document.getElementById("fastmask-load-badge");
+    if (!badgeEl) return; // a korai badge nem jott letre - a script sem futott le
     const nodes = (app.graph && app.graph._nodes) || [];
     let total = 0, dom = 0;
     for (const n of nodes) {
