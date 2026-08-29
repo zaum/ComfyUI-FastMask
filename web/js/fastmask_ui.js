@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.2.0";
+const FM_VERSION = "1.2.1";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -44,8 +44,11 @@ const CSS = `
 .fm-btn{position:relative;background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px;white-space:nowrap}
 .fm-btn.icon{padding:5px 9px;font-size:17px;line-height:1}
 .fm-btn.icon svg{display:block}
-/* fixed-width mode toggle: only the icon changes between paint/erase */
-.fm-btn.fm-mode{width:36px;padding:5px 0;text-align:center}
+/* labeled mode toggle: "Paint"/"Erase" are both 5 chars, so min-width keeps
+   the button width constant when toggling; auto height -> nothing is clipped */
+.fm-btn.fm-mode{min-width:104px;padding:5px 12px;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.fm-btn.fm-mode svg{flex:none}
+.fm-modelabel{font-size:13px;line-height:1}
 /* live brush size badge in the middle of the canvas */
 .fm-brushbadge{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;border:2px solid rgba(255,255,255,.95);outline:1px solid rgba(0,0,0,.75);border-radius:50%;background:rgba(255,255,255,.08);pointer-events:none}
 .fm-gap{width:12px}
@@ -115,8 +118,9 @@ function iconFill() {
   return svgIcon('<path d="m19 11-8-8-8.6 8.6a1 1 0 0 0 0 1.4l5.6 5.6a1 1 0 0 0 1.4 0L19 11Z"/><path d="m5 2 5 5"/><path d="M21 15.5a2.5 2.5 0 0 1 0 5 2.5 2.5 0 0 1 0-5Z"/>');
 }
 function iconShowMask() {
-  // Photoshop-style: rectangle with a dark-gray filled circle inside
-  return svgIcon('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4.5" fill="#555" stroke="none"/>');
+  // Photoshop-style: rectangle with a dark-gray filled circle inside,
+  // the circle has a white outline so it stays visible on dark previews
+  return svgIcon('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4.5" fill="#555" stroke="#fff" stroke-width="1.4"/>');
 }
 function iconPaint() {
   // B/W paint brush
@@ -807,8 +811,10 @@ function toggleShowMask() {
 
 function updateToolbar() {
   if (!st || !ui) return;
-  // B/W icons, fixed-size button: only the icon and the active state change
-  ui.modeBtn.innerHTML = st.mode === "paint" ? iconPaint() : iconErase();
+  // B/W icons, fixed-size button: icon + text label change between paint/erase
+  // ("Paint" and "Erase" are both 5 chars -> constant button width)
+  ui.modeBtn.innerHTML = (st.mode === "paint" ? iconPaint() : iconErase()) +
+    '<span class="fm-modelabel">' + (st.mode === "paint" ? "Paint" : "Erase") + "</span>";
   ui.modeBtn.classList.toggle("active", st.mode === "erase");
   ui.modeBtn.dataset.tip = "Toggle Paint / Erase (X) - right button always erases";
   ui.fillToggle.classList.toggle("active", st.autoFill);

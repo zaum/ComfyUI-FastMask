@@ -27,14 +27,14 @@ class FastMaskEditor:
         ]
         return {
             "required": {
-                # image_upload: True -> a beepitett frontend extension
-                # upload/refresh gombot es preview-t rak a node-ra
-                # (ugyanaz, mint a LoadImage-nel)
+                # image_upload: True -> the built-in frontend extension adds
+                # the upload/refresh buttons and the preview to the node
+                # (same mechanism as LoadImage)
                 "image": (sorted(files), {"image_upload": True}),
                 "mask_path": ("STRING", {"default": ""}),
             },
-            # opcionalis IMAGE bemenet: ha mas node (pl. LoadImage) kimenetet
-            # kotunk ide, az felulirja a dropdown-valasztott kepet
+            # optional IMAGE input: when another node (e.g. LoadImage) output
+            # is connected here, it overrides the dropdown-selected image
             "optional": {
                 "image_opt": ("IMAGE",),
             },
@@ -70,7 +70,7 @@ class FastMaskEditor:
         return self._finalize(out_image, mask, save_name)
 
     def _load_from_tensor(self, image_opt, mask_path=""):
-        """Bekotott IMAGE tenzorbol (B,H,W,C, 0..1 float) dolgozik."""
+        """Works from a connected IMAGE tensor (B,H,W,C, 0..1 float)."""
         t = image_opt[0].detach().clamp(0, 1).cpu().numpy()
         h, w = t.shape[0], t.shape[1]
         out_image = torch.from_numpy(t.astype(np.float32))[None,]
@@ -80,7 +80,7 @@ class FastMaskEditor:
         return self._finalize(out_image, mask, save_name)
 
     def _load_mask_and_preview(self, img, size, mask_path, img_path):
-        """Maszk betoltese (mask_path) + UI preview mentese temp-be."""
+        """Load the mask (mask_path) + save the UI preview to temp."""
         w, h = size
         mask = None
         if mask_path:
@@ -93,7 +93,7 @@ class FastMaskEditor:
             else:
                 print(f"[FastMask] mask file not found: {mpath}")
         if mask is None:
-            # Meg nincs festett maszk -> ures maszk (semmi nincs maszkolva).
+            # No painted mask yet -> empty mask (nothing is masked).
             out_mask = torch.zeros((h, w), dtype=torch.float32)
         else:
             out_mask = torch.from_numpy(mask).to(torch.float32)
@@ -115,18 +115,25 @@ class FastMaskEditor:
             print(f"[FastMask] mask: path={mask_path!r} painted={painted * 100:.1f}% size={w}x{h}")
             preview_dir = folder_paths.get_temp_directory()
             os.makedirs(preview_dir, exist_ok=True)
+            m = hashlib.sha256()
             if img_path:
-                m = hashlib.sha256()
                 with open(img_path, "rb") as f:
                     m.update(f.read())
-                save_name = f"fastmask_preview_{m.hexdigest()[:16]}.png"
             else:
                 buf = io.BytesIO()
                 preview.save(buf, format="PNG", compress_level=1)
-                save_name = "fastmask_preview_link_%s.png" % hashlib.sha256(
-                    buf.getvalue()).hexdigest()[:16]
-                with open(os.path.join(preview_dir, save_name), "wb") as f:
-                    f.write(buf.getvalue())
+                m.update(buf.getvalue())
+            # include the painted-mask state in the name, so the frontend
+            # gets a NEW url (no stale cache) after every mask edit
+            if mask_path:
+                mpath = folder_paths.get_annotated_filepath(mask_path)
+                if os.path.isfile(mpath):
+                    m.update(str(os.path.getmtime(mpath)).encode())
+            save_name = "fastmask_preview_%s.png" % m.hexdigest()[:16]
+            # ALWAYS write the preview file. Previously the file-loader branch
+            # only computed the name without saving -> /view 404 -> frontend
+            # shows "failed to load image" and the node preview disappears.
+            preview.save(os.path.join(preview_dir, save_name), format="PNG", compress_level=1)
         except Exception as e:
             print(f"[FastMask] preview save failed: {e}")
             save_name = None
@@ -150,7 +157,7 @@ class FastMaskEditor:
         if mask_path:
             mpath = folder_paths.get_annotated_filepath(mask_path)
             if os.path.isfile(mpath):
-                # a festett maszk valtozasa is ujrafuttatja a node-ot
+                # a painted-mask change also re-runs the node
                 h += ":" + str(os.path.getmtime(mpath))
         return h
 
