@@ -1,55 +1,39 @@
 // ============================================================================
-//  FastMask - nagyon gyors maszk editor a ComfyUI-hoz
+//  FastMask - very fast mask editor for ComfyUI
 //  ---------------------------------------------------------------------------
-//  Teljesitmeny-architektura:
-//   * A maszk egy offscreen 2D canvason el PREVIEW felbontasban, a festes
-//     GPU-gyorsitott canvas stroke-okkal tortenik (nincs objektum-allokacio
-//     ecsetvonasonkent).
-//   * a TELJES felbontasu maszk (Uint8Array) csak egyszer, az OK gombra keszul
-//     el (egyetlen drawImage + getImageData hivassal).
-//   * Minden frame csak a DIRTY RECTANGLE-oket rajzolja ujra - egy ecsetvonas
-//     soha nem rendereli ujra a teljes kepet.
-//   * Egyetlen requestAnimationFrame loop fut, es csak akkor rajzol, ha
-//     valtozott valami.
-//   * Zoom / pan tiszta CSS transform -> nulla koltsegu navigacio.
-//   * Undo/Redo nem masol teljes kepeket: 256x256-os LAZY TILE snapshotokat
-//     tarol, csak a tenylegesen erintett csempekbol.
+//  Performance architecture:
+//   * The mask lives on an offscreen 2D canvas at PREVIEW resolution; painting
+//     uses GPU-accelerated canvas strokes (no per-stroke object allocation).
+//   * The FULL-resolution mask (Uint8Array) is only built once, on the OK
+//     button (a single drawImage + getImageData call).
+//   * Every frame redraws only the affected DIRTY RECTANGLES - a brush stroke
+//     never re-renders the whole image.
+//   * A single requestAnimationFrame loop runs, and only draws when something
+//     actually changed.
+//   * Zoom / pan is a pure CSS transform -> zero-cost navigation.
+//   * Undo/Redo does not copy whole images: it stores lazy 256x256 TILE
+//     snapshots of only the tiles that were actually touched.
 //
-//  Nem implementalt (csak terv): gyors SAM szegmentacio - lasd README.md,
-//  "SAM szegmentacio - tervezett kiterjesztes" fejezet.
+//  Not implemented (design only): fast SAM segmentation - see README.md,
+//  "SAM segmentation - planned extension" chapter.
 // ============================================================================
 
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 
-/* --- LEGELSO SOROS DIAGNOSZTIKA: ha a script barmikor lefut, ez latszik --- */
-try {
-  const fmEarlyBadge = document.createElement("div");
-  fmEarlyBadge.id = "fastmask-load-badge";
-  fmEarlyBadge.textContent = "FastMask v1.0.6 script LEFUTOTT";
-  fmEarlyBadge.style.cssText =
-    "position:fixed;left:8px;bottom:8px;z-index:999999;" +
-    "background:#1e4620;color:#b6f0b6;border:1px solid #4a4;" +
-    "font:11px/1.4 monospace;padding:4px 8px;border-radius:4px;" +
-    "pointer-events:none;opacity:0.9;";
-  if (document.body) document.body.appendChild(fmEarlyBadge);
-  else document.addEventListener("DOMContentLoaded", () => document.body.appendChild(fmEarlyBadge));
-} catch (e) {}
-/* -------------------------------------------------------------------------- */
-
-const TILE = 256;          // undo/redo csempe meret (preview px)
-const MAX_PREVIEW = 2048;  // max preview felbontas (a vegeredmeny full-res)
+const TILE = 256;          // undo/redo tile size (preview px)
+const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.0.6"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.6
-const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION; // verzio a gombon - diagnosztika
+const FM_VERSION = "1.1.0";
+const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
 const MOD = isMac ? "\u2318" : "Ctrl";
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
-let ui = null; // DOM elemek (buildUI tolti fel)
-let st = null; // editor allapot (openEditor tolti fel)
+let ui = null; // DOM elements (filled by buildUI)
+let st = null; // editor state (filled by openEditor)
 
 /* --------------------------------- CSS --------------------------------- */
 const CSS = `
@@ -68,11 +52,12 @@ const CSS = `
 .fm-slider{width:170px;accent-color:#4a90d9}
 .fm-brushval{min-width:60px;text-align:right;font-variant-numeric:tabular-nums;color:#8cf}
 .fm-swatch{display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid #777;vertical-align:-2px;margin-right:5px}
-.fm-viewport{position:relative;flex:1;overflow:hidden;cursor:crosshair;touch-action:none}
+.fm-viewport{position:relative;flex:1;overflow:hidden;cursor:none;touch-action:none}
 .fm-viewport.fm-pan{cursor:grab}
 .fm-viewport.fm-panning{cursor:grabbing}
 .fm-wrap{position:absolute;left:0;top:0;transform-origin:0 0}
 .fm-wrap canvas{display:block}
+.fm-wrap canvas.fm-bw{outline:1px solid rgba(255,255,255,.28);outline-offset:-1px}
 .fm-statusbar{display:flex;gap:18px;padding:5px 12px;background:#1b1b1b;border-top:1px solid #333;font-size:12px;color:#aaa;flex-wrap:wrap}
 .fm-statusbar b{color:#8cf;font-weight:600}
 .fm-hint{margin-left:auto}
@@ -99,7 +84,7 @@ function btn(id, html, tip, cls) {
   return b;
 }
 
-/* ------------------------------ DOM felepites ------------------------------ */
+/* ------------------------------ DOM construction ------------------------------ */
 function buildUI() {
   if (ui) return;
   injectCSS();
@@ -112,17 +97,17 @@ function buildUI() {
 
   const g1 = document.createElement("div");
   g1.className = "fm-group";
-  const modeMask = btn("fmModeMask", "\uD83D\uDD8C Maszk", "Festes / maszkolas (X)");
-  const modeErase = btn("fmModeErase", "\uD83E\uDDFD Torles", "Torles (X)");
-  const clearAll = btn("fmClear", "\uD83D\uDDD1 Clear all", "Osszes torlese (" + MOD + "+Del)");
-  const undoBtn = btn("fmUndo", "&#8617; Undo", "Visszavonas (" + MOD + "+Z)");
-  const redoBtn = btn("fmRedo", "&#8618; Redo", "Megis (" + MOD + "+Y / " + MOD + "+Shift+Z)");
-  g1.append(modeMask, modeErase, clearAll, undoBtn, redoBtn);
+  // two-state paint/erase toggle (X toggles, right button always erases)
+  const modeBtn = btn("fmMode", "\uD83D\uDD8C Paint", "Toggle Paint / Erase (X) - right button always erases");
+  const clearAll = btn("fmClear", "\uD83D\uDDD1 Clear all", "Clear all (" + MOD + "+Del)");
+  const undoBtn = btn("fmUndo", "&#8617; Undo", "Undo (" + MOD + "+Z)");
+  const redoBtn = btn("fmRedo", "&#8618; Redo", "Redo (" + MOD + "+Y / " + MOD + "+Shift+Z)");
+  g1.append(modeBtn, clearAll, undoBtn, redoBtn);
 
   const g2 = document.createElement("div");
   g2.className = "fm-group";
   const brushLabel = document.createElement("span");
-  brushLabel.textContent = "Ecset";
+  brushLabel.textContent = "Brush";
   const brushSlider = document.createElement("input");
   brushSlider.type = "range";
   brushSlider.id = "fmBrush";
@@ -130,14 +115,14 @@ function buildUI() {
   brushSlider.min = "1";
   brushSlider.max = "1000";
   brushSlider.value = "60";
-  brushSlider.dataset.tip = "Ecset merete (" + MOD + "+bal eger huzas, " + MOD + "+gorgo, [ / ])";
+  brushSlider.dataset.tip = "Brush size (" + MOD + "+left-drag, " + MOD + "+wheel, [ / ])";
   const brushVal = document.createElement("span");
   brushVal.className = "fm-brushval";
   g2.append(brushLabel, brushSlider, brushVal);
 
   const g3 = document.createElement("div");
   g3.className = "fm-group";
-  const hatchBtn = btn("fmHatch", "\u25A8 Halo", "Halo vonalak szine (C)");
+  const hatchBtn = btn("fmHatch", "\u25A8 Hatch", "Hatch line color (C)");
   const colorInput = document.createElement("input");
   colorInput.type = "color";
   colorInput.className = "fm-colinput";
@@ -145,8 +130,8 @@ function buildUI() {
   const swatch = document.createElement("span");
   swatch.className = "fm-swatch";
   hatchBtn.prepend(swatch);
-  const fillToggle = btn("fmFill", "Zart alakzat kitoltese", "Zart korvonal belso reszenek automatikus kitoltese (F)");
-  const showMask = btn("fmShow", "\uD83D\uDC41 Show mask", "Fekete-feher maszk: fole tartva elonezet, kattintva rogzitve marheto szerkeszteni (M)");
+  const fillToggle = btn("fmFill", "Auto-fill", "Auto-fill interior of closed shapes (F)");
+  const showMask = btn("fmShow", "\uD83D\uDC41 Show mask", "B/W mask - hover for preview, click to lock and edit (M)");
   g3.append(hatchBtn, colorInput, fillToggle, showMask);
 
   const spacer = document.createElement("div");
@@ -154,9 +139,9 @@ function buildUI() {
 
   const g4 = document.createElement("div");
   g4.className = "fm-group";
-  const fitBtn = btn("fmFit", "\u26F6 Fit", "Teljes kep ablakra (" + MOD + "+0)");
-  const cancelBtn = btn("fmCancel", "\u2715 Cancel", "Megse (Esc)");
-  const okBtn = btn("fmOk", "\u2714 OK", "Mentes es bezaras (Enter)", "ok");
+  const fitBtn = btn("fmFit", "\u26F6 Fit", "Fit image to window (" + MOD + "+0)");
+  const cancelBtn = btn("fmCancel", "\u2715 Cancel", "Cancel (Esc)");
+  const okBtn = btn("fmOk", "\u2714 OK", "Save and close (Enter)", "ok");
   g4.append(fitBtn, cancelBtn, okBtn);
 
   topbar.append(g1, g2, g3, spacer, g4);
@@ -165,7 +150,7 @@ function buildUI() {
   viewport.className = "fm-viewport";
   const loading = document.createElement("div");
   loading.className = "fm-loading";
-  loading.textContent = "Kep betoltese...";
+  loading.textContent = "Loading image...";
   const wrap = document.createElement("div");
   wrap.className = "fm-wrap fm-hidden";
   const canvas = document.createElement("canvas");
@@ -175,18 +160,18 @@ function buildUI() {
   const statusbar = document.createElement("div");
   statusbar.className = "fm-statusbar";
   statusbar.innerHTML =
-    '<span>Mod: <b id="fmStMode">Maszk</b></span>' +
-    '<span>Ecset: <b id="fmStBrush"></b></span>' +
+    '<span>Mode: <b id="fmStMode">Paint</b></span>' +
+    '<span>Brush: <b id="fmStBrush"></b></span>' +
     '<span>Zoom: <b id="fmStZoom"></b></span>' +
-    '<span>Kep: <b id="fmStSize"></b></span>' +
-    '<span class="fm-hint">Ctrl+bal gomb: ecset meret &bull; Ctrl+gorgo: ecset &bull; gorgo: zoom &bull; Space / kozepso gomb: pan &bull; jobb gomb: torles &bull; X: mod &bull; ' + MOD + '+Z / ' + MOD + '+Y: undo/redo</span>';
+    '<span>Image: <b id="fmStSize"></b></span>' +
+    '<span class="fm-hint">' + MOD + '+left-drag: brush size &bull; ' + MOD + '+wheel: brush &bull; wheel: zoom &bull; Space / middle button: pan &bull; right button: erase &bull; X: mode &bull; ' + MOD + '+Z / ' + MOD + '+Y: undo/redo</span>';
 
   overlay.append(topbar, viewport, statusbar);
   document.body.appendChild(overlay);
 
   ui = {
     overlay, topbar, viewport, wrap, canvas, loading,
-    modeMask, modeErase, clearAll, undoBtn, redoBtn, brushSlider, brushVal,
+    modeBtn, clearAll, undoBtn, redoBtn, brushSlider, brushVal,
     hatchBtn, swatch, colorInput, fillToggle, showMask,
     fitBtn, cancelBtn, okBtn,
     stMode: statusbar.querySelector("#fmStMode"),
@@ -198,14 +183,14 @@ function buildUI() {
   wireUI();
 }
 
-/* ------------------------------ allapot / init ------------------------------ */
+/* ------------------------------ state / init ------------------------------ */
 async function openEditor(node) {
   buildUI();
-  if (st) return; // mar nyitva
+  if (st) return; // already open
 
   const src = getSourceImage(node);
   if (!src) {
-    toast("FastMask", "Nincs betoltott kep a node bemeneten! Futtasd le a workflow-t elobb.", "error");
+    toast("FastMask", "No image found on the node inputs! Run the workflow first.", "error");
     return;
   }
 
@@ -222,7 +207,7 @@ async function openEditor(node) {
     })));
   } catch (err) {
     ui.overlay.classList.add("fm-hidden");
-    toast("FastMask", "A kep betoltese sikertelen: " + err, "error");
+    toast("FastMask", "Failed to load image: " + err, "error");
     return;
   }
 
@@ -232,17 +217,17 @@ async function openEditor(node) {
   const pw = Math.max(1, Math.round(fullW * f));
   const ph = Math.max(1, Math.round(fullH * f));
 
-  // alap kep (preview felbontasban, egyszer rajzolva)
+  // base image (preview resolution, drawn once)
   const baseCanvas = document.createElement("canvas");
   baseCanvas.width = pw; baseCanvas.height = ph;
   baseCanvas.getContext("2d").drawImage(img, 0, 0, pw, ph);
 
-  // maszk (preview felbontasban; a full-res csak az OK-nal keszul)
+  // mask (preview resolution; the full-res version is only built on OK)
   const maskCanvas = document.createElement("canvas");
   maskCanvas.width = pw; maskCanvas.height = ph;
   const mctx = maskCanvas.getContext("2d", { willReadFrequently: true });
 
-  // szinezett maszk (halo / feher) - dirty rect-enkent frissitve
+  // tinted mask (hatch / white) - updated per dirty rect
   const tintCanvas = document.createElement("canvas");
   tintCanvas.width = pw; tintCanvas.height = ph;
   const tctx = tintCanvas.getContext("2d");
@@ -265,8 +250,8 @@ async function openEditor(node) {
     autoFill: true,
     hatchColor: "#ff3fd8",
     hatchPattern: null,
-    maskLocked: false,      // Show mask gombbal rogzitve
-    bwHover: false,         // Show mask folott hover-elonezet
+    maskLocked: false,      // locked via the Show mask button
+    bwHover: false,         // B/W preview while hovering Show mask
     dirty: [],
     cursor: { x: 0, y: 0, inside: false },
     prevCursor: null,
@@ -289,7 +274,7 @@ async function openEditor(node) {
   ui.fillToggle.classList.toggle("active", st.autoFill);
   ui.stSize.textContent = fullW + " \u00D7 " + fullH + (f < 1 ? "  (preview " + pw + "\u00D7" + ph + ")" : "");
 
-  // korabban festett maszk visszaallitasa a mask_path-rol (ha van)
+  // restore a previously painted mask from mask_path (if any)
   (async () => {
     const mw = (node.widgets || []).find((w) => w.name === "mask_path");
     if (!mw || !mw.value) return;
@@ -301,11 +286,11 @@ async function openEditor(node) {
         subfolder: seg.join("/"),
         type: "input",
       })));
-      if (!st) return; // kozben bezartak az editort
+      if (!st) return; // editor was closed meanwhile
       mctx.clearRect(0, 0, pw, ph);
       mctx.drawImage(mimg, 0, 0, pw, ph);
       st.dirty.push({ x: 0, y: 0, w: pw, h: ph });
-    } catch (e) { /* nincs mentett maszk, megyunk uresen */ }
+    } catch (e) { /* no saved mask, start empty */ }
   })();
 
   makeHatch();
@@ -315,7 +300,11 @@ async function openEditor(node) {
   ui.loading.classList.add("fm-hidden");
   ui.wrap.classList.remove("fm-hidden");
 
-  // elso teljes render, aztan csak dirty rect-ek
+  // IMPORTANT: full initial render, otherwise the image would only appear
+  // under the brush strokes (dirty-rect-only painting)
+  renderAll();
+
+  // first full render, then dirty rects only
   st.raf = requestAnimationFrame(frame);
 }
 
@@ -337,7 +326,7 @@ function loadImage(url) {
 
 function getSourceImage(node) {
   try {
-    // 1. bekotott IMAGE bemenet (image_opt) -> ez felulirja a dropdown-t
+    // 1. connected IMAGE input (image_opt) - overrides the dropdown
     for (const inp of node.inputs || []) {
       if (inp.type !== "IMAGE" || !inp.link) continue;
       const link = app.graph.links[inp.link];
@@ -347,14 +336,14 @@ function getSourceImage(node) {
         return out.images.find((i) => i.type === "output") || out.images[0];
       }
     }
-    // 2. a node sajat image combo widgetje (file-loader mod, mint a LoadImage)
+    // 2. the node's own image combo widget (file-loader mode, like LoadImage)
     const w = (node.widgets || []).find((w) => w.name === "image");
     if (w && w.value && typeof w.value === "string") {
-      // az ertek tartalmazhat subfoldert is ("mappa/fajl.png")
+      // the value may contain a subfolder ("folder/file.png")
       const seg = w.value.split("/");
       return { filename: seg.pop(), subfolder: seg.join("/"), type: "input" };
     }
-    // 3. a node-on megjelenitett preview (feltoltes utan)
+    // 3. the preview shown on the node (after upload)
     if (node.images && node.images.length) return node.images[0];
   } catch (e) { /* ignore */ }
   return null;
@@ -431,7 +420,7 @@ function addDirty(x, y, w, h) {
 
 function renderAll() { st.dirty.push({ x: 0, y: 0, w: st.pw, h: st.ph }); }
 
-// Egy dirty rect ujrarajzolasa: alap kep + a maszkra limitalt halo/feher rajz.
+// Redraw one dirty rect: base image + hatch/white drawing limited to the mask.
 function renderRect(r) {
   const v = st.vctx, t = st.tctx;
   const bw = bwMode();
@@ -443,7 +432,7 @@ function renderRect(r) {
   } else {
     v.drawImage(st.baseCanvas, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
   }
-  // maszk szinezese csak a rect-en belul
+  // tint the mask inside the rect only
   t.save();
   t.beginPath(); t.rect(r.x, r.y, r.w, r.h); t.clip();
   t.clearRect(r.x, r.y, r.w, r.h);
@@ -465,23 +454,36 @@ function cursorRect(c) {
   return { x: Math.max(0, c.x - rad), y: Math.max(0, c.y - rad), w: rad * 2, h: rad * 2 };
 }
 
+// Thin (screen-space ~1px) brush outline + center crosshair. Both are drawn in
+// the SAME canvas frame, so the crosshair can never lag behind the circle.
 function drawCursor() {
   const v = st.vctx, c = st.cursor;
   const rad = brushRadiusCanvas();
-  const lw = 1.5 / st.view.scale;
+  const lw = 1 / st.view.scale;
   v.save();
   v.lineWidth = lw;
-  v.strokeStyle = "rgba(0,0,0,.85)";
+  v.strokeStyle = "rgba(255,255,255,.95)";
+  v.shadowColor = "rgba(0,0,0,.9)";
+  v.shadowBlur = 2 / st.view.scale;
   v.beginPath(); v.arc(c.x, c.y, rad, 0, Math.PI * 2); v.stroke();
-  v.lineWidth = lw;
-  v.strokeStyle = "rgba(255,255,255,.9)";
-  v.beginPath(); v.arc(c.x, c.y, rad - lw, 0, Math.PI * 2); v.stroke();
+  // crosshair: four lines from the center outwards, small gap in the middle
+  v.shadowBlur = 0;
+  const g = Math.max(rad * 0.16, 3 / st.view.scale);
+  v.beginPath();
+  v.moveTo(c.x - rad, c.y); v.lineTo(c.x - g, c.y);
+  v.moveTo(c.x + g, c.y);   v.lineTo(c.x + rad, c.y);
+  v.moveTo(c.x, c.y - rad); v.lineTo(c.x, c.y - g);
+  v.moveTo(c.x, c.y + g);   v.lineTo(c.x, c.y + rad);
+  v.stroke();
   v.restore();
 }
 
-// Egyetlen rAF loop: dirty rect-ek + kurzor, egyebkent tenni-valo sincs.
+// Single rAF loop: dirty rects + cursor, otherwise nothing to do.
 function frame() {
   if (!st) return;
+  const bw = bwMode();
+  // faint outline around the image frame in B/W mode (CSS outline, zero cost)
+  ui.canvas.classList.toggle("fm-bw", bw);
   if (st.dirty.length) {
     let list = st.dirty;
     st.dirty = [];
@@ -493,7 +495,7 @@ function frame() {
     if (st.prevCursor) renderRect(st.prevCursor);
     st.prevCursor = null;
     const c = st.cursor;
-    if (c.inside) {
+    if (c.inside && !st.panning) {
       const r = cursorRect(c);
       renderRect(r);
       st.prevCursor = r;
@@ -504,7 +506,7 @@ function frame() {
   st.raf = requestAnimationFrame(frame);
 }
 
-/* ------------------------------ festes ------------------------------ */
+/* ------------------------------ painting ------------------------------ */
 function lineRadiusCanvas() {
   return (st.brushFull * st.previewScale) / 2;
 }
@@ -561,7 +563,7 @@ function strokeTo(p) {
   m.beginPath();
   m.moveTo(p.x, p.y);
   addDirty(bb.x, bb.y, bb.w, bb.h);
-  // stroke bbox novelese
+  // grow the stroke bbox
   const sb = st.strokeBBox;
   const x0 = Math.min(sb.x, bb.x), y0 = Math.min(sb.y, bb.y);
   const x1 = Math.max(sb.x + sb.w, bb.x + bb.w), y1 = Math.max(sb.y + sb.h, bb.y + bb.h);
@@ -574,7 +576,7 @@ function endStroke() {
   if (!st.drawing) return;
   const m = st.mctx;
   m.stroke();
-  m.restore(); // gco vissza
+  m.restore(); // restore gco
   if (st.autoFill && st.ptsN >= 6 && closedEnough()) fillClosedShape();
   pushUndo({ tiles: st.strokeTiles });
   st.strokeTiles = null;
@@ -589,8 +591,8 @@ function closedEnough() {
   return d <= Math.max(st.brushFull * st.previewScale * 0.75, 10);
 }
 
-// Zart alakzat belso reszenek kitoltese (evenodd scanline) - egy temp canvas
-// segitsegevel, ami utan egyetlen drawImage kerul a maszkra.
+// Fill the interior of a closed shape (evenodd scanline) using a temp canvas,
+// then a single drawImage onto the mask.
 function fillClosedShape() {
   const bb = st.strokeBBox;
   captureTiles(bb);
@@ -616,8 +618,8 @@ function fillClosedShape() {
 /* ------------------- undo / redo (lazy tile snapshot) ------------------- */
 function tileCols() { return Math.ceil(st.pw / TILE); }
 
-// A rect altal erintett csempek elmentese (egyszer vonasonkent), MIELOTT
-// modositjuk oket. Igy az undo csak a tenylegesen valtozott teruletet tarolja.
+// Save the tiles touched by the rect (once per stroke) BEFORE modifying them.
+// This way undo only stores the area that actually changed.
 function captureTiles(bb) {
   if (!st.strokeTiles || !bb) return;
   const cols = tileCols();
@@ -697,8 +699,9 @@ function clearAll() {
   pushUndo(entry);
 }
 
-/* ------------------------------ toolbar / allapot ------------------------------ */
+/* ------------------------------ toolbar / state ------------------------------ */
 function setMode(mode) { st.mode = mode; updateToolbar(); }
+function toggleMode() { setMode(st.mode === "paint" ? "erase" : "paint"); }
 
 function setBrush(sizeFull) {
   st.brushFull = clamp(Math.round(sizeFull), 1, Math.min(st.fullW, st.fullH));
@@ -717,22 +720,22 @@ function toggleShowMask() {
 
 function updateToolbar() {
   if (!st || !ui) return;
-  ui.modeMask.classList.toggle("active", st.mode === "paint");
-  ui.modeErase.classList.toggle("active", st.mode === "erase");
+  ui.modeBtn.textContent = st.mode === "paint" ? "\uD83D\uDD8C Paint" : "\uD83E\uDDFD Erase";
+  ui.modeBtn.classList.toggle("active", st.mode === "erase");
+  ui.modeBtn.dataset.tip = "Toggle Paint / Erase (X) - right button always erases";
   ui.fillToggle.classList.toggle("active", st.autoFill);
   ui.showMask.classList.toggle("active", st.maskLocked);
   ui.brushVal.textContent = st.brushFull + " px";
-  ui.stMode.textContent = st.mode === "paint" ? "Maszk" : "Torles";
+  ui.stMode.textContent = st.mode === "paint" ? "Paint" : "Erase";
   ui.stBrush.textContent = st.brushFull + " px";
   ui.stZoom.textContent = Math.round(st.view.scale * 100) + "%";
 }
 
-/* ------------------------------ UI esemenyek ------------------------------ */
+/* ------------------------------ UI events ------------------------------ */
 function wireUI() {
   const v = ui.viewport;
 
-  ui.modeMask.addEventListener("click", () => setMode("paint"));
-  ui.modeErase.addEventListener("click", () => setMode("erase"));
+  ui.modeBtn.addEventListener("click", () => { if (st) toggleMode(); });
   ui.clearAll.addEventListener("click", () => clearAll());
   ui.undoBtn.addEventListener("click", () => undo());
   ui.redoBtn.addEventListener("click", () => redo());
@@ -830,7 +833,7 @@ function wireUI() {
   window.addEventListener("keyup", (e) => onKey(e, false), true);
 }
 
-/* ------------------------------ billentyuzet ------------------------------ */
+/* ------------------------------ keyboard ------------------------------ */
 function onKey(e, down) {
   if (!st) return;
   const k = e.key;
@@ -866,7 +869,8 @@ function onKey(e, down) {
   switch (k.toLowerCase()) {
     case "x":
     case "b":
-      setMode(st.mode === "paint" ? "erase" : "paint");
+    case "e":
+      toggleMode();
       break;
     case "m":
       if (!st.bwHover && !st.maskLocked) { st.bwHover = true; renderAll(); }
@@ -893,10 +897,10 @@ function onKey(e, down) {
   }
 }
 
-/* --------------------- mentes: full-resolution export --------------------- */
-// A preview-felbontasu maszk canvasbol egyetlen drawImage-gel full-res
-// Uint8Array/ImageData keszul (RGB = feher, A = maszk), es PNG-kent megy fel
-// a ComfyUI /upload/image API-jan (subfolder: fastmask).
+/* --------------------- save: full-resolution export --------------------- */
+// From the preview-resolution mask canvas a single drawImage builds the
+// full-res Uint8Array/ImageData (RGB = white, A = mask), uploaded as PNG via
+// the ComfyUI /upload/image API (subfolder: fastmask).
 async function buildFullResMask() {
   const full = document.createElement("canvas");
   full.width = st.fullW; full.height = st.fullH;
@@ -907,7 +911,7 @@ async function buildFullResMask() {
   const data = fctx.getImageData(0, 0, st.fullW, st.fullH);
   const d = data.data;
   for (let i = 0; i < d.length; i += 4) {
-    d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; // feher, az alfa a maszk
+    d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; // white, alpha carries the mask
   }
   fctx.putImageData(data, 0, 0);
   return full;
@@ -916,7 +920,7 @@ async function buildFullResMask() {
 async function saveAndClose() {
   if (!st) return;
   ui.okBtn.disabled = true;
-  ui.okBtn.textContent = "Mentes...";
+  ui.okBtn.textContent = "Saving...";
   try {
     const full = await buildFullResMask();
     const blob = await new Promise((res) => full.toBlob(res, "image/png"));
@@ -938,7 +942,7 @@ async function saveAndClose() {
     app.graph.setDirtyCanvas(true, false);
     closeEditor();
   } catch (err) {
-    toast("FastMask", "Mentes sikertelen: " + err, "error");
+    toast("FastMask", "Save failed: " + err, "error");
   } finally {
     if (ui) {
       ui.okBtn.disabled = false;
@@ -956,12 +960,12 @@ window.__fastmaskDebug = fmLog;
 function fmEditorClick(node) {
   try {
     Promise.resolve(openEditor(node)).catch((err) => {
-      console.error("[FastMask] editor megnyitas hiba:", err);
-      try { toast("FastMask", "Editor hiba: " + err.message, "error"); } catch (e2) {}
+      console.error("[FastMask] editor open error:", err);
+      try { toast("FastMask", "Editor error: " + err.message, "error"); } catch (e2) {}
     });
   } catch (err) {
-    console.error("[FastMask] editor megnyitas hiba:", err);
-    try { alert("[FastMask] hiba: " + err.message); } catch (e2) {}
+    console.error("[FastMask] editor open error:", err);
+    try { alert("[FastMask] error: " + err.message); } catch (e2) {}
   }
 }
 
@@ -972,22 +976,22 @@ function makeOpenButtonEl(node) {
   el.style.cssText =
     "display:block;width:100%;height:100%;box-sizing:border-box;" +
     "background:#2a2a2a;color:#eee;border:1px solid #555;border-radius:6px;" +
-    "cursor:pointer;font-size:13px;padding:4px 10px;font-family:inherit;text-align:center";
+    "cursor:pointer;font-size:13px;padding:4px 10px;font-family:inherit;text-align:center;pointer-events:auto";
   el.addEventListener("mouseenter", () => { el.style.background = "#3a3a3a"; el.style.borderColor = "#777"; });
   el.addEventListener("mouseleave", () => { el.style.background = "#2a2a2a"; el.style.borderColor = "#555"; });
-  el.addEventListener("pointerdown", (e) => e.stopPropagation()); // ne huzza a node-ot
+  el.addEventListener("pointerdown", (e) => e.stopPropagation()); // do not drag the node
   el.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); fmEditorClick(node); });
   return el;
 }
 
 function addOpenButton(node) {
-  // idempotens: ne keruljon fel ketto gomb
+  // idempotent: never add two buttons
   if (!node) return;
   const widgets = node.widgets || [];
 
-  // TISZTITAS: minden stale FastMask widget eltavositasa (regi canvas gomb,
-  // cache-elt JS-bol maradt widget barmilyen neven, amiben fastmask szerepel,
-  // de nem a mi aktualis DOM gombunk)
+  // CLEANUP: remove every stale FastMask widget (old canvas button, widgets
+  // left over from cached JS under any name containing "fastmask" that is not
+  // our current DOM button)
   for (let i = widgets.length - 1; i >= 0; i--) {
     const w = widgets[i];
     if (!w) continue;
@@ -996,30 +1000,32 @@ function addOpenButton(node) {
     const isOurs = w.name === "fastmask_open" && w.element && w.element.tagName === "BUTTON";
     if ((nameMatch || labelMatch) && !isOurs) {
       widgets.splice(i, 1);
-      fmLog("stale FastMask widget eltavositva:", w.name || w.label || "(nvtelen)");
+      fmLog("stale FastMask widget removed:", w.name || w.label || "(unnamed)");
     }
   }
 
-  // ELSODLEGES: valodi HTML button DOM widgetkent - ez mindig latszik es
-  // kattinthat, fuggetlenul a litegraph canvas widget-rajzolastol
+  // PRIMARY: a real HTML button as a DOM widget. canvasOnly MUST be false,
+  // otherwise the new frontend renders it as a static, non-interactive
+  // canvas snapshot (that was the "oval button" bug).
   if (typeof node.addDOMWidget === "function") {
     try {
       const el = makeOpenButtonEl(node);
-      const w = node.addDOMWidget("fastmask_open", "", el, { serialize: false });
+      const w = node.addDOMWidget("fastmask_open", "", el, { serialize: false, canvasOnly: false });
       if (w) {
         w.label = "";
+        if (w.options) w.options.canvasOnly = false;
         try { w.computeSize = () => [0, 32]; } catch (e) {}
         if (w.serializeValue) w.serializeValue = () => undefined;
         if ("serialize" in w) w.serialize = false;
-        fmLog("DOM gomb hozzaadva:", node.id, node.comfyClass || node.type);
+        fmLog("DOM button added:", node.id, node.comfyClass || node.type);
         return;
       }
     } catch (e) {
-      console.warn("[FastMask] DOM widget sikertelen, canvas button-re esik vissza:", e);
+      console.warn("[FastMask] DOM widget failed, falling back to canvas button:", e);
     }
   }
 
-  // TARTALEK: litegraph canvas button (ha addDOMWidget nem elerheto)
+  // FALLBACK: litegraph canvas button (if addDOMWidget is unavailable)
   if (!node.addWidget) return;
   const w = node.addWidget("button", BTN_LABEL, null, () => fmEditorClick(node));
   if (w) {
@@ -1027,7 +1033,7 @@ function addOpenButton(node) {
     try { w.label = BTN_LABEL; } catch (e) {}
     if (w.serializeValue) w.serializeValue = () => undefined;
     if ("serialize" in w) w.serialize = false;
-    fmLog("canvas gomb hozzaadva:", node.id, node.comfyClass || node.type);
+    fmLog("canvas button added:", node.id, node.comfyClass || node.type);
   }
 }
 
@@ -1046,17 +1052,39 @@ function scanExistingNodes() {
     for (const node of nodes) {
       if (isFastMaskNode(node)) { addOpenButton(node); n++; }
     }
-    if (n) fmLog("meglvo FastMask node-ok frissitve:", n);
+    if (n) fmLog("existing FastMask nodes updated:", n);
   } catch (e) {
     console.warn("[FastMask] graph scan failed:", e);
   }
+}
+
+/* Hide the built-in "Edit or mask image" pencil button that the default
+   frontend overlays on image previews (we provide our own editor). */
+function hideNativeMaskButtons() {
+  const RX = /mask ?editor|edit or mask|open in mask/i;
+  const check = (el) => {
+    const t = (el.getAttribute?.("aria-label") || "") + " " + (el.getAttribute?.("title") || "");
+    if (RX.test(t)) el.style.setProperty("display", "none", "important");
+  };
+  const scan = (root) => {
+    if (root.nodeType !== 1) return;
+    if (root.tagName === "BUTTON") check(root);
+    if (root.querySelectorAll) root.querySelectorAll("button[aria-label],button[title]").forEach(check);
+  };
+  try {
+    const mo = new MutationObserver((muts) => {
+      for (const m of muts) for (const n of m.addedNodes) scan(n);
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+    document.querySelectorAll("button[aria-label],button[title]").forEach(check);
+  } catch (e) { /* never break the app over cosmetics */ }
 }
 
 app.registerExtension({
   name: "FastMask.Editor",
   beforeRegisterNodeDef(nodeType, nodeData) {
     if (!nodeData || nodeData.name !== "FastMaskEditor") return;
-    fmLog("node regisztralva a frontend fele:", nodeData.name);
+    fmLog("node registered to the frontend:", nodeData.name);
 
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
@@ -1075,49 +1103,26 @@ app.registerExtension({
       return r;
     };
   },
-  // masodik biztositek: minden letrehozott node-ra ranezunk (ha a fenti
-  // wrapper masik extension altal felulirasra kerult, itt is hozzaadodik)
+  // second safety net: inspect every created node (in case the wrapper above
+  // was overridden by another extension)
   nodeCreated(node) {
     if (isFastMaskNode(node)) addOpenButton(node);
   },
-  // harmadik biztositek: workflow betoltes / grafikonvaltas utan is ranezunk
-  // a grafikonban mar meglevo node-okra
+  // third safety net: re-inspect nodes already in the graph after workflow
+  // load / graph switch
   setup() {
-    fmLog("extension betoltve, node-ok atvizsgalasa...");
+    fmLog("extension loaded, scanning nodes...");
+    hideNativeMaskButtons();
     scanExistingNodes();
-    // workflow-betoltes utan is fusson le (a setup egyszer fut csak)
+    // also run after workflow loads (setup only runs once)
     const origConfigure = app.configureGraph ? app.configureGraph.bind(app) : null;
     if (origConfigure) {
       app.configureGraph = function () {
         const r = origConfigure.apply(null, arguments);
         scanExistingNodes();
-        updateBadge();
         return r;
       };
     }
-    updateBadge();
   },
 });
-
-/* -------- kepernyore iras diagnosztika (console nelkul is lathato) -------- */
-function updateBadge() {
-  try {
-    badgeEl = document.getElementById("fastmask-load-badge");
-    if (!badgeEl) return; // a korai badge nem jott letre - a script sem futott le
-    const nodes = (app.graph && app.graph._nodes) || [];
-    let total = 0, dom = 0;
-    for (const n of nodes) {
-      if (!isFastMaskNode(n)) continue;
-      total++;
-      const w = (n.widgets || []).find((x) => x.name === "fastmask_open");
-      if (w && w.element) dom++;
-    }
-    badgeEl.textContent =
-      "FastMask v" + FM_VERSION + " AKTIV | FastMask node: " + total +
-      " | DOM gomb: " + dom;
-  } catch (e) {}
-}
-// kisebb idozitett frissites is, hogy ne maradjon le node letregozas utan
-setInterval(updateBadge, 2000);
-
-fmLog("script betoltve, verzió: v" + FM_VERSION);
+fmLog("script loaded, version v" + FM_VERSION);
