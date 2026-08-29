@@ -38,18 +38,26 @@ MUST be kept:
    the node's open button (e.g. `FastMask Editor v1.1.1`), so the actually
    running frontend version is visible at a glance.
 
-4. **DOM widget buttons must opt out of canvas-only mode.** ComfyUI frontend
-   renders DOM widgets as static canvas snapshots unless `canvasOnly: false`
-   is passed. Buttons added via `node.addDOMWidget(...)` must therefore use:
+4. **The open button must be a DOM widget with a REAL element body.** The only
+   button mechanism proven to work in this frontend (frontend v1.49.6) is the
+   same one the working `one-node-flux-2-klein` node uses: pass an actual
+   `HTMLElement` as the **third argument** of `addDOMWidget`:
 
    ```js
-   node.addDOMWidget("fastmask_open", "button", el, { serialize: false, canvasOnly: false, hideOnZoom: false });
+   const el = makeOpenButtonEl(node); // a real <button> with click listeners
+   node.addDOMWidget("fm_open", "div", el, {
+     getValue() { return null; },
+     setValue() {},
+     serialize: false,
+     computeSize() { return [-1, 34]; },
+   });
    ```
 
-   The frontend renders a DOM widget as an interactive Vue component only when
-   the widget **type** is a non-empty string AND `canvasOnly` is false
-   (`shouldRenderAsVue = !options.canvasOnly && !!type`). Otherwise the button
-   appears as a non-clickable, oval canvas drawing.
+   Pitfalls that do NOT work here (all tested):
+   - `node.addWidget("button", ...)` canvas widget → click never fires.
+   - `addDOMWidget(name, "button", callback, ...)` → WRONG signature: the
+     third argument is the element, not a callback; the frontend then draws a
+     static, non-clickable oval snapshot on the canvas.
 
 5. **Deployment for local testing** — the live instance loads the node from
    `C:\Users\peter\ComfyUI-Installs\ComfyUI (v0.25.0)\ComfyUI\custom_nodes\ComfyUI-FastMask`

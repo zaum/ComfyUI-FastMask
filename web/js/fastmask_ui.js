@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.1.3";
+const FM_VERSION = "1.2.0";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -141,38 +141,20 @@ function buildUI() {
   const topbar = document.createElement("div");
   topbar.className = "fm-topbar";
 
-  // THREE toolbar blocks: left (fit, hatch, mode) / centered (undo, redo) /
-  // right (clear, brush, fill, show-mask, cancel, OK).
+  // THREE toolbar blocks: left (undo, redo, clear all) / centered
+  // (brush size, fill, show mask) / right (fit, hatch color, mode,
+  // cancel, OK).
   const gLeft = document.createElement("div");
   gLeft.className = "fm-group";
-  const fitBtn = btn("fmFit", iconFit(), "Fit image to window (" + MOD + "+0)", "icon");
-  const hatchBtn = btn("fmHatch", "", "Hatch line color (C)", "icon");
-  const swatch = document.createElement("span");
-  swatch.className = "fm-swatch";
-  hatchBtn.append(swatch);
-  const colorInput = document.createElement("input");
-  colorInput.type = "color";
-  colorInput.className = "fm-colinput";
-  colorInput.value = "#ff3fd8";
-  // two-state paint/erase toggle (X toggles, right button always erases).
-  // Icon-only with fixed width so the button never changes size when toggled.
-  const modeBtn = btn("fmMode", iconPaint(), "Toggle Paint / Erase (X) - right button always erases", "icon fm-mode");
-  gLeft.append(fitBtn, hatchBtn, colorInput, modeBtn);
+  const undoBtn = btn("fmUndo", iconUndo(), "Undo (" + MOD + "+Z)", "icon");
+  const redoBtn = btn("fmRedo", iconRedo(), "Redo (" + MOD + "+Y / " + MOD + "+Shift+Z)", "icon");
+  const clearAll = btn("fmClear", iconTrash(), "Clear all (" + MOD + "+Del)", "icon");
+  gLeft.append(undoBtn, redoBtn, clearAll);
 
   const spL = document.createElement("div");
   spL.className = "fm-spacer";
   const gMid = document.createElement("div");
   gMid.className = "fm-group";
-  const undoBtn = btn("fmUndo", iconUndo(), "Undo (" + MOD + "+Z)", "icon");
-  const redoBtn = btn("fmRedo", iconRedo(), "Redo (" + MOD + "+Y / " + MOD + "+Shift+Z)", "icon");
-  gMid.append(undoBtn, redoBtn);
-  const spR = document.createElement("div");
-  spR.className = "fm-spacer";
-
-  const gRight = document.createElement("div");
-  gRight.className = "fm-group";
-  const clearAll = btn("fmClear", iconTrash(), "Clear all (" + MOD + "+Del)", "icon");
-
   // brush size: label BEFORE the slider, no pixel value next to it (the live
   // size is shown in the middle of the canvas while changing)
   const brushLabel = document.createElement("span");
@@ -186,12 +168,29 @@ function buildUI() {
   brushSlider.max = "1000";
   brushSlider.value = "60";
   brushSlider.dataset.tip = "Brush size (" + MOD + "+left-drag, " + MOD + "+wheel, [ / ])";
-
   const fillToggle = btn("fmFill", iconFill(), "Auto-fill interior of closed shapes (F)", "icon");
   const showMask = btn("fmShow", iconShowMask(), "B/W mask - hover for preview, click to lock and edit (M)", "icon");
+  gMid.append(brushLabel, brushSlider, fillToggle, showMask);
+  const spR = document.createElement("div");
+  spR.className = "fm-spacer";
+
+  const gRight = document.createElement("div");
+  gRight.className = "fm-group";
+  const fitBtn = btn("fmFit", iconFit(), "Fit image to window (" + MOD + "+0)", "icon");
+  const hatchBtn = btn("fmHatch", "", "Hatch line color (C)", "icon");
+  const swatch = document.createElement("span");
+  swatch.className = "fm-swatch";
+  hatchBtn.append(swatch);
+  const colorInput = document.createElement("input");
+  colorInput.type = "color";
+  colorInput.className = "fm-colinput";
+  colorInput.value = "#ff3fd8";
+  // two-state paint/erase toggle (X toggles, right button always erases).
+  // Icon-only with fixed width so the button never changes size when toggled.
+  const modeBtn = btn("fmMode", iconPaint(), "Toggle Paint / Erase (X) - right button always erases", "icon fm-mode");
   const cancelBtn = btn("fmCancel", "Cancel", "Cancel (Esc)");
   const okBtn = btn("fmOk", "\u2714 OK", "Save and close (Enter)", "ok");
-  gRight.append(clearAll, brushLabel, brushSlider, fillToggle, showMask, cancelBtn, okBtn);
+  gRight.append(fitBtn, hatchBtn, colorInput, modeBtn, cancelBtn, okBtn);
 
   topbar.append(gLeft, spL, gMid, spR, gRight);
 
@@ -1077,43 +1076,47 @@ function makeOpenButtonEl(node) {
 }
 
 function addOpenButton(node) {
-  // idempotent: never add two buttons
   if (!node) return;
   const widgets = node.widgets || [];
 
-  // CLEANUP: remove every stale FastMask widget (old DOM buttons, widgets
-  // left over from cached JS under any name containing "fastmask" that is not
-  // our current canvas button - the canvas button has no .element)
+  // Remove every previous FastMask open widget (old canvas buttons, old DOM
+  // widgets, stale cached ones - anything named/labelled "fastmask" or
+  // "fm_open"); we always re-add exactly ONE fresh button below.
   for (let i = widgets.length - 1; i >= 0; i--) {
     const w = widgets[i];
     if (!w) continue;
-    const nameMatch = String(w.name || "").toLowerCase().indexOf("fastmask") !== -1;
-    const labelMatch = String(w.label || w.name || "").toLowerCase().indexOf("fastmask") !== -1;
-    const isOurs = w.name === "fastmask_open" && !w.element;
-    if ((nameMatch || labelMatch) && !isOurs) {
+    const nm = String(w.name || "").toLowerCase();
+    const lb = String(w.label || w.name || "").toLowerCase();
+    if (nm.indexOf("fastmask") !== -1 || nm.indexOf("fm_open") !== -1 ||
+        lb.indexOf("fastmask") !== -1) {
       widgets.splice(i, 1);
-      fmLog("stale FastMask widget removed:", w.name || w.label || "(unnamed)");
+      fmLog("previous FastMask widget removed:", w.name || w.label || "(unnamed)");
     }
   }
 
-  // PRIMARY: litegraph canvas button widget - the EXACT same mechanism as the
-  // LoadImage "choose file to upload" button, which is proven to work in the
-  // current frontend. DOM widgets proved unreliable: depending on type/options
-  // they render as a static, non-interactive canvas snapshot, and a
-  // type:"button" DOM widget gets replaced by the frontend's own Vue button
-  // component that never calls our callback.
-  if (typeof node.addWidget === "function") {
+  // PROVEN PATTERN - exactly how one-node-flux-2-klein builds its working
+  // buttons: a DOM widget whose body is a REAL <button> HTMLElement, passed
+  // as the third argument of addDOMWidget. Canvas button widgets and
+  // wrongly-typed DOM widgets rendered as static, non-interactive snapshots
+  // in this frontend version; a real element always receives pointer events.
+  if (typeof node.addDOMWidget === "function") {
     try {
-      const w = node.addWidget("button", "Open FastMask Editor", null, () => fmEditorClick(node), { serialize: false, canvasOnly: true });
+      const el = makeOpenButtonEl(node);
+      const w = node.addDOMWidget("fm_open", "div", el, {
+        getValue() { return null; },
+        setValue() {},
+        serialize: false,
+        computeSize() { return [-1, 34]; },
+      });
       if (w) {
-        w.name = "fastmask_open";
-        if (w.serializeValue) w.serializeValue = () => undefined;
+        w.name = "fm_open";
         if ("serialize" in w) w.serialize = false;
-        fmLog("canvas button added:", node.id, node.comfyClass || node.type);
+        if (w.serializeValue) w.serializeValue = () => undefined;
+        fmLog("DOM open button added:", node.id, node.comfyClass || node.type);
         return;
       }
     } catch (e) {
-      console.warn("[FastMask] canvas button failed:", e);
+      console.warn("[FastMask] DOM open button failed:", e);
     }
   }
   fmLog("could not add open button:", node.id);
