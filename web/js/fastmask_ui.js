@@ -19,14 +19,14 @@
 //  "SAM szegmentacio - tervezett kiterjesztes" fejezet.
 // ============================================================================
 
-import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { app } from "/scripts/app.js";
+import { api } from "/scripts/api.js";
 
 /* --- LEGELSO SOROS DIAGNOSZTIKA: ha a script barmikor lefut, ez latszik --- */
 try {
   const fmEarlyBadge = document.createElement("div");
   fmEarlyBadge.id = "fastmask-load-badge";
-  fmEarlyBadge.textContent = "FastMask v1.0.5 script LEFUTOTT";
+  fmEarlyBadge.textContent = "FastMask v1.0.6 script LEFUTOTT";
   fmEarlyBadge.style.cssText =
     "position:fixed;left:8px;bottom:8px;z-index:999999;" +
     "background:#1e4620;color:#b6f0b6;border:1px solid #4a4;" +
@@ -40,7 +40,7 @@ try {
 const TILE = 256;          // undo/redo csempe meret (preview px)
 const MAX_PREVIEW = 2048;  // max preview felbontas (a vegeredmeny full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.0.5"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.5
+const FM_VERSION = "1.0.6"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.6
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION; // verzio a gombon - diagnosztika
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
