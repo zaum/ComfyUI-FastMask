@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.1.1";
+const FM_VERSION = "1.1.2";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -47,7 +47,7 @@ const CSS = `
 /* fixed-width mode toggle: only the icon changes between paint/erase */
 .fm-btn.fm-mode{width:36px;padding:5px 0;text-align:center}
 /* live brush size badge in the middle of the canvas */
-.fm-brushbadge{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;background:rgba(0,0,0,.75);color:#fff;border:1px solid #666;border-radius:8px;padding:8px 18px;font-size:20px;font-weight:600;pointer-events:none}
+.fm-brushbadge{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;border:2px solid rgba(255,255,255,.95);outline:1px solid rgba(0,0,0,.75);border-radius:50%;background:rgba(255,255,255,.08);pointer-events:none}
 .fm-gap{width:12px}
 .fm-btn:hover{background:#3a3a3a;border-color:#666}
 .fm-btn.active{background:#3d6ea5;border-color:#5a8fc4;color:#fff}
@@ -190,7 +190,7 @@ function iconFit() {
 
   const fillToggle = btn("fmFill", iconFill(), "Auto-fill interior of closed shapes (F)", "icon");
   const showMask = btn("fmShow", iconShowMask(), "B/W mask - hover for preview, click to lock and edit (M)", "icon");
-  const cancelBtn = btn("fmCancel", "\u2715", "Cancel (Esc)", "icon");
+  const cancelBtn = btn("fmCancel", "Cancel", "Cancel (Esc)");
   const okBtn = btn("fmOk", "\u2714 OK", "Save and close (Enter)", "ok");
   gRight.append(clearAll, brushLabel, brushSlider, fillToggle, showMask, cancelBtn, okBtn);
 
@@ -259,10 +259,13 @@ async function openEditor(node) {
       type: src.type || "output",
     })));
   } catch (err) {
-    ui.overlay.classList.add("fm-hidden");
+    console.error("[FastMask] image load failed:", src, err);
+    ui.loading.textContent = "FastMask: failed to load image (" + (src.filename || "?") + ")";
     toast("FastMask", "Failed to load image: " + err, "error");
     return;
   }
+
+  try {
 
   const fullW = img.naturalWidth;
   const fullH = img.naturalHeight;
@@ -359,6 +362,17 @@ async function openEditor(node) {
 
   // first full render, then dirty rects only
   st.raf = requestAnimationFrame(frame);
+  } catch (err) {
+    // Any init error must surface here - otherwise the UI would stay on
+    // "Loading image..." forever with no visible cause.
+    console.error("[FastMask] editor init failed:", err);
+    if (ui) {
+      ui.loading.textContent =
+        "FastMask init error: " + (err && err.message ? err.message : err);
+      ui.loading.classList.remove("fm-hidden");
+    }
+    toast("FastMask", "Editor init failed: " + (err && err.message ? err.message : err), "error");
+  }
 }
 
 function closeEditor() {
@@ -771,12 +785,15 @@ function setBrush(sizeFull) {
   updateToolbar();
 }
 
-// Live brush size display in the middle of the canvas; auto-hides shortly
-// after the size stops changing.
+// Live brush preview in the middle of the canvas: an actual circle with the
+// current brush diameter (screen pixels) instead of a number; auto-hides
+// shortly after the size stops changing.
 let brushBadgeTimer = 0;
 function showBrushBadge() {
   if (!ui || !st) return;
-  ui.brushBadge.textContent = st.brushFull + " px";
+  const d = Math.max(12, Math.round(st.brushFull * st.previewScale * st.view.scale));
+  ui.brushBadge.style.width = d + "px";
+  ui.brushBadge.style.height = d + "px";
   ui.brushBadge.classList.remove("fm-hidden");
   clearTimeout(brushBadgeTimer);
   brushBadgeTimer = setTimeout(() => ui.brushBadge.classList.add("fm-hidden"), 800);
@@ -1065,55 +1082,42 @@ function addOpenButton(node) {
   if (!node) return;
   const widgets = node.widgets || [];
 
-  // CLEANUP: remove every stale FastMask widget (old canvas button, widgets
+  // CLEANUP: remove every stale FastMask widget (old DOM buttons, widgets
   // left over from cached JS under any name containing "fastmask" that is not
-  // our current DOM button)
+  // our current canvas button - the canvas button has no .element)
   for (let i = widgets.length - 1; i >= 0; i--) {
     const w = widgets[i];
     if (!w) continue;
     const nameMatch = String(w.name || "").toLowerCase().indexOf("fastmask") !== -1;
     const labelMatch = String(w.label || w.name || "").toLowerCase().indexOf("fastmask") !== -1;
-    const isOurs = w.name === "fastmask_open" && w.element && w.element.tagName === "BUTTON";
+    const isOurs = w.name === "fastmask_open" && !w.element;
     if ((nameMatch || labelMatch) && !isOurs) {
       widgets.splice(i, 1);
       fmLog("stale FastMask widget removed:", w.name || w.label || "(unnamed)");
     }
   }
 
-  // PRIMARY: a real HTML button as a DOM widget. canvasOnly MUST be false,
-  // otherwise the new frontend renders it as a static, non-interactive
-  // canvas snapshot (that was the "oval button" bug). The widget also needs a
-  // REAL type string: shouldRenderAsVue = !canvasOnly && !!type -> Vue-rendered
-  // DOM widgets (like the audio widget) are fully interactive; an empty type
-  // falls back to the legacy path where clicks may be swallowed.
-  if (typeof node.addDOMWidget === "function") {
+  // PRIMARY: litegraph canvas button widget - the EXACT same mechanism as the
+  // LoadImage "choose file to upload" button, which is proven to work in the
+  // current frontend. DOM widgets proved unreliable: depending on type/options
+  // they render as a static, non-interactive canvas snapshot, and a
+  // type:"button" DOM widget gets replaced by the frontend's own Vue button
+  // component that never calls our callback.
+  if (typeof node.addWidget === "function") {
     try {
-      const el = makeOpenButtonEl(node);
-      const w = node.addDOMWidget("fastmask_open", "button", el, { serialize: false, canvasOnly: false, hideOnZoom: false });
+      const w = node.addWidget("button", "Open FastMask Editor", null, () => fmEditorClick(node), { serialize: false, canvasOnly: true });
       if (w) {
-        w.label = "";
-        if (w.options) { w.options.canvasOnly = false; w.options.hideOnZoom = false; }
-        try { w.computeSize = () => [0, 32]; } catch (e) {}
+        w.name = "fastmask_open";
         if (w.serializeValue) w.serializeValue = () => undefined;
         if ("serialize" in w) w.serialize = false;
-        fmLog("DOM button added:", node.id, node.comfyClass || node.type);
+        fmLog("canvas button added:", node.id, node.comfyClass || node.type);
         return;
       }
     } catch (e) {
-      console.warn("[FastMask] DOM widget failed, falling back to canvas button:", e);
+      console.warn("[FastMask] canvas button failed:", e);
     }
   }
-
-  // FALLBACK: litegraph canvas button (if addDOMWidget is unavailable)
-  if (!node.addWidget) return;
-  const w = node.addWidget("button", BTN_LABEL, null, () => fmEditorClick(node));
-  if (w) {
-    w.name = "fastmask_open";
-    try { w.label = BTN_LABEL; } catch (e) {}
-    if (w.serializeValue) w.serializeValue = () => undefined;
-    if ("serialize" in w) w.serialize = false;
-    fmLog("canvas button added:", node.id, node.comfyClass || node.type);
-  }
+  fmLog("could not add open button:", node.id);
 }
 
 function isFastMaskNode(node) {
