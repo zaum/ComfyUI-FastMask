@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.2.1";
+const FM_VERSION = "1.2.2";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -75,6 +75,7 @@ const CSS = `
 .fm-wrap canvas.fm-bw{outline:1px solid rgba(255,255,255,.28);outline-offset:-1px}
 .fm-statusbar{display:flex;gap:18px;padding:5px 12px;background:#1b1b1b;border-top:1px solid #333;font-size:12px;color:#aaa;flex-wrap:wrap}
 .fm-statusbar b{color:#8cf;font-weight:600}
+.fm-statusbar kbd{display:inline-block;padding:1px 5px;margin:0 1px;font:600 11px/1.4 system-ui,Segoe UI,sans-serif;color:#8cf;background:#1e2a3a;border:1px solid #3a4a5a;border-radius:3px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 1px 0 rgba(0,0,0,.4)}
 .fm-hint{margin-left:auto}
 .fm-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16px;color:#aaa;background:#101010;z-index:2}
 .fm-hidden{display:none!important}
@@ -219,7 +220,14 @@ function buildUI() {
     '<span>Brush: <b id="fmStBrush"></b></span>' +
     '<span>Zoom: <b id="fmStZoom"></b></span>' +
     '<span>Image: <b id="fmStSize"></b></span>' +
-    '<span class="fm-hint">' + MOD + '+left-drag: brush size &bull; ' + MOD + '+wheel: brush &bull; wheel: zoom &bull; Space / middle button: pan &bull; right button: erase &bull; X: mode &bull; ' + MOD + '+Z / ' + MOD + '+Y: undo/redo</span>';
+    '<span class="fm-hint">' +
+      '<kbd>' + MOD + '</kbd>+<kbd>left-drag</kbd>: brush size &bull; ' +
+      '<kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>: brush &bull; ' +
+      '<kbd>wheel</kbd>: zoom &bull; ' +
+      '<kbd>Space</kbd> / <kbd>middle button</kbd>: pan &bull; ' +
+      '<kbd>right button</kbd>: erase &bull; ' +
+      '<kbd>X</kbd>: mode &bull; ' +
+      '<kbd>' + MOD + '</kbd>+<kbd>Z</kbd> / <kbd>' + MOD + '</kbd>+<kbd>Y</kbd>: undo/redo</span>';
 
   overlay.append(topbar, viewport, statusbar);
   document.body.appendChild(overlay);
@@ -779,10 +787,10 @@ function clearAll() {
 function setMode(mode) { st.mode = mode; updateToolbar(); }
 function toggleMode() { setMode(st.mode === "paint" ? "erase" : "paint"); }
 
-function setBrush(sizeFull) {
+function setBrush(sizeFull, fromKeyboard) {
   st.brushFull = clamp(Math.round(sizeFull), 1, Math.min(st.fullW, st.fullH));
   ui.brushSlider.value = String(st.brushFull);
-  showBrushBadge();
+  if (!fromKeyboard) showBrushBadge();
   st.cursorDirty = true;
   updateToolbar();
 }
@@ -979,10 +987,10 @@ function onKey(e, down) {
       ui.colorInput.click();
       break;
     case "[":
-      setBrush(st.brushFull * 0.9);
+      setBrush(st.brushFull * 0.9, true);
       break;
     case "]":
-      setBrush(st.brushFull * 1.1);
+      setBrush(st.brushFull * 1.1, true);
       break;
     case "+":
     case "=":
