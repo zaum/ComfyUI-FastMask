@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.1.0";
+const FM_VERSION = "1.1.1";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -42,6 +42,10 @@ const CSS = `
 .fm-group{display:flex;align-items:center;gap:6px}
 .fm-spacer{flex:1}
 .fm-btn{position:relative;background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px;white-space:nowrap}
+.fm-btn.icon{padding:5px 9px;font-size:17px;line-height:1}
+.fm-btn.icon svg{display:block}
+.fm-sep{width:1px;height:22px;background:#3a3a3a;margin:0 4px}
+.fm-gap{width:12px}
 .fm-btn:hover{background:#3a3a3a;border-color:#666}
 .fm-btn.active{background:#3d6ea5;border-color:#5a8fc4;color:#fff}
 .fm-btn.ok{background:#2e7d32;border-color:#388e3c}
@@ -49,9 +53,14 @@ const CSS = `
 .fm-btn:disabled{opacity:.4;cursor:default}
 .fm-btn::after{content:attr(data-tip);position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);background:#000;color:#fff;border:1px solid #555;padding:5px 9px;border-radius:5px;white-space:nowrap;font-size:12px;opacity:0;pointer-events:none;transition:opacity .1s;z-index:100000}
 .fm-btn:hover::after{opacity:1}
-.fm-slider{width:170px;accent-color:#4a90d9}
-.fm-brushval{min-width:60px;text-align:right;font-variant-numeric:tabular-nums;color:#8cf}
-.fm-swatch{display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid #777;vertical-align:-2px;margin-right:5px}
+/* thin, flat slider track */
+.fm-slider{-webkit-appearance:none;appearance:none;width:170px;height:3px;background:#444;border-radius:2px;outline:none;cursor:pointer}
+.fm-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;border-radius:50%;background:#4a90d9;border:none;cursor:pointer}
+.fm-slider::-moz-range-track{height:3px;background:#444;border-radius:2px}
+.fm-slider::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:#4a90d9;border:none;cursor:pointer}
+.fm-brushlabel{color:#aaa}
+.fm-brushval{margin-left:2px;min-width:42px;text-align:right;font-variant-numeric:tabular-nums;color:#8cf}
+.fm-swatch{display:inline-block;width:18px;height:18px;border-radius:50%;border:1px solid #777;vertical-align:-4px}
 .fm-viewport{position:relative;flex:1;overflow:hidden;cursor:none;touch-action:none}
 .fm-viewport.fm-pan{cursor:grab}
 .fm-viewport.fm-panning{cursor:grabbing}
@@ -94,20 +103,60 @@ function buildUI() {
 
   const topbar = document.createElement("div");
   topbar.className = "fm-topbar";
+/* --- toolbar SVG icons (inline, inherit currentColor) --- */
+function svgIcon(paths, viewBox) {
+  return '<svg width="18" height="18" viewBox="' + (viewBox || "0 0 24 24") +
+    '" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + paths + "</svg>";
+}
+function iconUndo() {
+  return svgIcon('<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v0a6 6 0 0 1-6 6h-3"/>');
+}
+function iconRedo() {
+  return svgIcon('<path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0-6 6v0a6 6 0 0 0 6 6h3"/>');
+}
+function iconTrash() {
+  return svgIcon('<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/>');
+}
+function iconFill() {
+  // paint bucket with drop
+  return svgIcon('<path d="m19 11-8-8-8.6 8.6a1 1 0 0 0 0 1.4l5.6 5.6a1 1 0 0 0 1.4 0L19 11Z"/><path d="m5 2 5 5"/><path d="M21 15.5a2.5 2.5 0 0 1 0 5 2.5 2.5 0 0 1 0-5Z"/>');
+}
+function iconShowMask() {
+  // Photoshop-style: rectangle with a circle inside (mask channel toggle)
+  return svgIcon('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4.5"/>');
+}
+function iconFit() {
+  return svgIcon('<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>');
+}
+
+
 
   const g1 = document.createElement("div");
   g1.className = "fm-group";
   // two-state paint/erase toggle (X toggles, right button always erases)
   const modeBtn = btn("fmMode", "\uD83D\uDD8C Paint", "Toggle Paint / Erase (X) - right button always erases");
-  const clearAll = btn("fmClear", "\uD83D\uDDD1 Clear all", "Clear all (" + MOD + "+Del)");
-  const undoBtn = btn("fmUndo", "&#8617; Undo", "Undo (" + MOD + "+Z)");
-  const redoBtn = btn("fmRedo", "&#8618; Redo", "Redo (" + MOD + "+Y / " + MOD + "+Shift+Z)");
-  g1.append(modeBtn, clearAll, undoBtn, redoBtn);
+  g1.append(modeBtn);
 
-  const g2 = document.createElement("div");
-  g2.className = "fm-group";
+  // separator + undo / redo (icon-only)
+  const sep1 = document.createElement("div");
+  sep1.className = "fm-sep";
+  const undoBtn = btn("fmUndo", iconUndo(), "Undo (" + MOD + "+Z)", "icon");
+  const redoBtn = btn("fmRedo", iconRedo(), "Redo (" + MOD + "+Y / " + MOD + "+Shift+Z)", "icon");
+  g1.append(sep1, undoBtn, redoBtn);
+
+  // separator + clear all (icon-only)
+  const sep2 = document.createElement("div");
+  sep2.className = "fm-sep";
+  const clearAll = btn("fmClear", iconTrash(), "Clear all (" + MOD + "+Del)", "icon");
+  g1.append(sep2, clearAll);
+  const gap1 = document.createElement("div");
+  gap1.className = "fm-gap";
+  g1.append(gap1);
+
+  // brush size: label BEFORE the slider, thin track, tight value
   const brushLabel = document.createElement("span");
-  brushLabel.textContent = "Brush";
+  brushLabel.className = "fm-brushlabel";
+  brushLabel.textContent = "Brush size";
   const brushSlider = document.createElement("input");
   brushSlider.type = "range";
   brushSlider.id = "fmBrush";
@@ -118,33 +167,33 @@ function buildUI() {
   brushSlider.dataset.tip = "Brush size (" + MOD + "+left-drag, " + MOD + "+wheel, [ / ])";
   const brushVal = document.createElement("span");
   brushVal.className = "fm-brushval";
-  g2.append(brushLabel, brushSlider, brushVal);
+  g1.append(brushLabel, brushSlider, brushVal);
 
-  const g3 = document.createElement("div");
-  g3.className = "fm-group";
-  const hatchBtn = btn("fmHatch", "\u25A8 Hatch", "Hatch line color (C)");
-  const colorInput = document.createElement("input");
-  colorInput.type = "color";
-  colorInput.className = "fm-colinput";
-  colorInput.value = "#ff3fd8";
-  const swatch = document.createElement("span");
-  swatch.className = "fm-swatch";
-  hatchBtn.prepend(swatch);
-  const fillToggle = btn("fmFill", "Auto-fill", "Auto-fill interior of closed shapes (F)");
-  const showMask = btn("fmShow", "\uD83D\uDC41 Show mask", "B/W mask - hover for preview, click to lock and edit (M)");
-  g3.append(hatchBtn, colorInput, fillToggle, showMask);
+  // auto-fill toggle + show mask (Photoshop-style circle-in-rectangle icon)
+  const fillToggle = btn("fmFill", iconFill(), "Auto-fill interior of closed shapes (F)", "icon");
+  const showMask = btn("fmShow", iconShowMask(), "B/W mask - hover for preview, click to lock and edit (M)", "icon");
+  g1.append(fillToggle, showMask);
 
   const spacer = document.createElement("div");
   spacer.className = "fm-spacer";
 
+  // right group: fit (icon-only), hatch color (round swatch), cancel, OK
   const g4 = document.createElement("div");
   g4.className = "fm-group";
-  const fitBtn = btn("fmFit", "\u26F6 Fit", "Fit image to window (" + MOD + "+0)");
+  const fitBtn = btn("fmFit", iconFit(), "Fit image to window (" + MOD + "+0)", "icon");
+  const hatchBtn = btn("fmHatch", "", "Hatch line color (C)", "icon");
+  const swatch = document.createElement("span");
+  swatch.className = "fm-swatch";
+  hatchBtn.append(swatch);
+  const colorInput = document.createElement("input");
+  colorInput.type = "color";
+  colorInput.className = "fm-colinput";
+  colorInput.value = "#ff3fd8";
   const cancelBtn = btn("fmCancel", "\u2715 Cancel", "Cancel (Esc)");
   const okBtn = btn("fmOk", "\u2714 OK", "Save and close (Enter)", "ok");
-  g4.append(fitBtn, cancelBtn, okBtn);
+  g4.append(fitBtn, hatchBtn, colorInput, cancelBtn, okBtn);
 
-  topbar.append(g1, g2, g3, spacer, g4);
+  topbar.append(g1, spacer, g4);
 
   const viewport = document.createElement("div");
   viewport.className = "fm-viewport";
@@ -450,8 +499,14 @@ function brushRadiusCanvas() {
 }
 
 function cursorRect(c) {
+  // Integer coordinates: fractional clip rects caused faint square seams
+  // along the redrawn area edges (very visible in B/W mode).
   const rad = brushRadiusCanvas() + 2;
-  return { x: Math.max(0, c.x - rad), y: Math.max(0, c.y - rad), w: rad * 2, h: rad * 2 };
+  const x = Math.max(0, Math.floor(c.x - rad));
+  const y = Math.max(0, Math.floor(c.y - rad));
+  const w = Math.min(st.pw - x, Math.ceil(rad * 2) + 2);
+  const h = Math.min(st.ph - y, Math.ceil(rad * 2) + 2);
+  return { x, y, w, h };
 }
 
 // Thin (screen-space ~1px) brush outline + center crosshair. Both are drawn in
@@ -492,14 +547,23 @@ function frame() {
     st.cursorDirty = true;
   }
   if (st.cursorDirty) {
-    if (st.prevCursor) renderRect(st.prevCursor);
-    st.prevCursor = null;
     const c = st.cursor;
-    if (c.inside && !st.panning) {
-      const r = cursorRect(c);
+    const inside = c.inside && !st.panning;
+    let r = inside ? cursorRect(c) : null;
+    if (st.prevCursor && r) {
+      // Redraw the UNION of the previous and current cursor rects as ONE rect.
+      // Rendering two adjacent rects leaves faint square seams in B/W mode.
+      const p = st.prevCursor;
+      const x0 = Math.min(p.x, r.x), y0 = Math.min(p.y, r.y);
+      const x1 = Math.max(p.x + p.w, r.x + r.w), y1 = Math.max(p.y + p.h, r.y + r.h);
+      r = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    } else if (!r && st.prevCursor) {
+      r = st.prevCursor; // cursor left: restore its area only
+    }
+    if (r) {
       renderRect(r);
-      st.prevCursor = r;
-      drawCursor();
+      st.prevCursor = inside ? r : null;
+      if (inside) drawCursor();
     }
     st.cursorDirty = false;
   }
