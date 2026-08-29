@@ -25,7 +25,7 @@ import { api } from "../../scripts/api.js";
 const TILE = 256;          // undo/redo csempe meret (preview px)
 const MAX_PREVIEW = 2048;  // max preview felbontas (a vegeredmeny full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.0.4"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.4
+const FM_VERSION = "1.0.5"; // console-ban ellenoriheto: [FastMask] script betoltve v1.0.5
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION; // verzio a gombon - diagnosztika
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -1076,9 +1076,41 @@ app.registerExtension({
       app.configureGraph = function () {
         const r = origConfigure.apply(null, arguments);
         scanExistingNodes();
+        updateBadge();
         return r;
       };
     }
+    updateBadge();
   },
 });
+
+/* -------- kepernyore iras diagnosztika (console nelkul is lathato) -------- */
+let badgeEl = null;
+function updateBadge() {
+  try {
+    if (!badgeEl) {
+      badgeEl = document.createElement("div");
+      badgeEl.style.cssText =
+        "position:fixed;left:8px;bottom:8px;z-index:999999;" +
+        "background:#1e4620;color:#8f8;color:#b6f0b6;border:1px solid #4a4;" +
+        "font:11px/1.4 monospace;padding:4px 8px;border-radius:4px;" +
+        "pointer-events:none;opacity:0.9;";
+      document.body.appendChild(badgeEl);
+    }
+    const nodes = (app.graph && app.graph._nodes) || [];
+    let total = 0, dom = 0;
+    for (const n of nodes) {
+      if (!isFastMaskNode(n)) continue;
+      total++;
+      const w = (n.widgets || []).find((x) => x.name === "fastmask_open");
+      if (w && w.element) dom++;
+    }
+    badgeEl.textContent =
+      "FastMask v" + FM_VERSION + " AKTIV | FastMask node: " + total +
+      " | DOM gomb: " + dom;
+  } catch (e) {}
+}
+// kisebb idozitett frissites is, hogy ne maradjon le node letregozas utan
+setInterval(updateBadge, 2000);
+
 fmLog("script betoltve, verzió: v" + FM_VERSION);
