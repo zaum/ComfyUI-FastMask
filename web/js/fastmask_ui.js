@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.2.8";
+const FM_VERSION = "1.2.24";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -49,6 +49,15 @@ const CSS = `
 .fm-btn.fm-mode{min-width:104px;padding:5px 12px;display:inline-flex;align-items:center;justify-content:center;gap:8px}
 .fm-btn.fm-mode svg{flex:none}
 .fm-modelabel{font-size:13px;line-height:1}
+/* oval Paint/Erase toggle: labels on both sides, sliding knob in the middle */
+.fm-mode-toggle{display:inline-flex;align-items:center;gap:10px;user-select:none}
+.fm-toggle-label{font-size:13px;color:#888;cursor:pointer;user-select:none;transition:color .15s}
+.fm-toggle-label.active{color:#fff;font-weight:600}
+.fm-toggle-track{position:relative;width:48px;height:26px;border-radius:13px;background:#2a2a2a;border:1px solid #444;cursor:pointer;transition:background .15s,border-color .15s;flex:none}
+.fm-toggle-track:hover{border-color:#666}
+.fm-toggle-track.active{background:#3d6ea5;border-color:#5a8fc4}
+.fm-toggle-knob{position:absolute;top:2px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:left .15s}
+.fm-toggle-track.active .fm-toggle-knob{left:25px}
 /* live brush size badge in the middle of the canvas */
 .fm-brushbadge{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;border:2px solid rgba(255,255,255,.95);outline:1px solid rgba(0,0,0,.75);border-radius:50%;background:rgba(255,255,255,.08);pointer-events:none}
 .fm-gap{width:12px}
@@ -68,15 +77,18 @@ const CSS = `
 .fm-brushval{margin-left:2px;min-width:42px;text-align:right;font-variant-numeric:tabular-nums;color:#8cf}
 .fm-swatch{display:inline-block;width:18px;height:18px;border-radius:50%;border:1px solid #777;vertical-align:-4px}
 .fm-viewport{position:relative;flex:1;overflow:hidden;cursor:none;touch-action:none}
+.fm-viewport.fm-outside{cursor:default}
 .fm-viewport.fm-pan{cursor:grab}
 .fm-viewport.fm-panning{cursor:grabbing}
+.fm-node-bw{position:absolute;inset:0;background:#000;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:5}
 .fm-wrap{position:absolute;left:0;top:0;transform-origin:0 0}
 .fm-wrap canvas{display:block}
 .fm-wrap canvas.fm-bw{outline:1px solid rgba(255,255,255,.28);outline-offset:-1px}
-.fm-statusbar{display:flex;gap:18px;padding:5px 12px;background:#1b1b1b;border-top:1px solid #333;font-size:12px;color:#aaa;flex-wrap:wrap}
+.fm-statusbar{display:flex;gap:28px;padding:5px 12px;background:#1b1b1b;border-top:1px solid #333;font-size:12px;color:#aaa;flex-wrap:wrap}
 .fm-statusbar b{color:#8cf;font-weight:600}
-.fm-statusbar kbd{display:inline-block;padding:1px 5px;margin:0 1px;font:600 11px/1.4 system-ui,Segoe UI,sans-serif;color:#8cf;background:#1e2a3a;border:1px solid #3a4a5a;border-radius:3px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 1px 0 rgba(0,0,0,.4)}
-.fm-hint{margin-left:auto}
+.fm-statusbar kbd{display:inline-block;padding:1px 4px;margin:0;font:600 11px/1.4 system-ui,Segoe UI,sans-serif;color:#8cf;background:#1e2a3a;border:1px solid #3a4a5a;border-radius:3px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 1px 0 rgba(0,0,0,.4)}
+.fm-hint{margin-left:auto;display:flex;gap:22px;flex-wrap:wrap;align-items:center}
+.fm-hint span{white-space:nowrap}
 .fm-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16px;color:#aaa;background:#101010;z-index:2}
 .fm-hidden{display:none!important}
 .fm-colinput{position:absolute;width:0;height:0;opacity:0}
@@ -193,16 +205,31 @@ function buildUI() {
   colorInput.type = "color";
   colorInput.className = "fm-colinput";
   colorInput.value = "#ff3fd8";
-  // two-state paint/erase toggle (X toggles, right button always erases).
-  // Icon-only with fixed width so the button never changes size when toggled.
-  const modeBtn = btn("fmMode", iconPaint(), "Toggle Paint / Erase (X) - right button always erases", "icon fm-mode");
+  // oval Paint/Erase toggle: labels on both sides, sliding knob
+  const modeToggle = document.createElement("div");
+  modeToggle.className = "fm-mode-toggle";
+  modeToggle.id = "fmModeToggle";
+  const paintLabel = document.createElement("span");
+  paintLabel.className = "fm-toggle-label";
+  paintLabel.textContent = "Paint";
+  const modeBtn = document.createElement("button");
+  modeBtn.id = "fmMode";
+  modeBtn.className = "fm-toggle-track";
+  modeBtn.dataset.tip = "Toggle Paint / Erase (X) - right button always erases";
+  const knob = document.createElement("span");
+  knob.className = "fm-toggle-knob";
+  modeBtn.appendChild(knob);
+  const eraseLabel = document.createElement("span");
+  eraseLabel.className = "fm-toggle-label";
+  eraseLabel.textContent = "Erase";
+  modeToggle.append(paintLabel, modeBtn, eraseLabel);
   const cancelBtn = btn("fmCancel", "Cancel", "Cancel (Esc)");
   const okBtn = btn("fmOk", "\u2714 OK", "Save and close (Enter)", "ok");
   gRight.append(cancelBtn, okBtn);
 
   // middle block (centered): fit-to-page FIRST, then brush size, fill,
-  // hatch color, mode toggle, and the B/W mask button LAST (rightmost)
-  gMid.append(fitBtn, brushLabel, brushSlider, fillToggle, hatchBtn, colorInput, modeBtn, showMask);
+  // hatch color, oval Paint/Erase toggle, and the B/W mask button LAST (rightmost)
+  gMid.append(fitBtn, brushLabel, brushSlider, fillToggle, hatchBtn, colorInput, modeToggle, showMask);
 
   topbar.append(gLeft, spL, gMid, spR, gRight);
 
@@ -232,6 +259,7 @@ function buildUI() {
        '<kbd>wheel</kbd>: zoom   ' +
        '<kbd>Space</kbd> / <kbd>middle button</kbd>: pan   ' +
        '<kbd>right button</kbd>: erase   ' +
+       '<kbd>double right button</kbd>: clear all   ' +
        '<kbd>X</kbd>: mode   ' +
        '<kbd>' + MOD + '</kbd>+<kbd>Z</kbd> / <kbd>' + MOD + '</kbd>+<kbd>Y</kbd>: undo/redo</span>';
 
@@ -240,7 +268,7 @@ function buildUI() {
 
   ui = {
     overlay, topbar, viewport, wrap, canvas, loading, brushBadge,
-    modeBtn, clearAll, undoBtn, redoBtn, brushSlider,
+    modeBtn, modeToggle, paintLabel, eraseLabel, clearAll, undoBtn, redoBtn, brushSlider,
     hatchBtn, swatch, colorInput, fillToggle, showMask,
     fitBtn, cancelBtn, okBtn,
     stBrush: statusbar.querySelector("#fmStBrush"),
@@ -602,7 +630,7 @@ function lineRadiusCanvas() {
 }
 
 function segBBox(x0, y0, x1, y1) {
-  const rad = lineRadiusCanvas() / 2 + 3;
+  const rad = lineRadiusCanvas() + 5;
   const x = Math.min(x0, x1) - rad, y = Math.min(y0, y1) - rad;
   return { x, y, w: Math.abs(x0 - x1) + rad * 2, h: Math.abs(y0 - y1) + rad * 2 };
 }
@@ -738,6 +766,9 @@ function pushUndo(entry) {
 }
 
 function undo() {
+  const now = Date.now();
+  if (now - (undo._last || 0) < 200) return;
+  undo._last = now;
   const entry = st.undoStack.pop();
   if (!entry) return;
   const cols = tileCols();
@@ -746,13 +777,17 @@ function undo() {
     const x = (idx % cols) * TILE, y = Math.floor(idx / cols) * TILE;
     redoEntry.tiles.set(idx, st.mctx.getImageData(x, y, img.width, img.height));
     st.mctx.putImageData(img, x, y);
-    addDirty(x, y, img.width, img.height);
   }
+  renderAll();
+  requestAnimationFrame(() => { if (st) renderAll(); });
   st.redoStack.push(redoEntry);
   updateToolbar();
 }
 
 function redo() {
+  const now = Date.now();
+  if (now - (redo._last || 0) < 200) return;
+  redo._last = now;
   const entry = st.redoStack.pop();
   if (!entry) return;
   const cols = tileCols();
@@ -761,8 +796,9 @@ function redo() {
     const x = (idx % cols) * TILE, y = Math.floor(idx / cols) * TILE;
     undoEntry.tiles.set(idx, st.mctx.getImageData(x, y, img.width, img.height));
     st.mctx.putImageData(img, x, y);
-    addDirty(x, y, img.width, img.height);
   }
+  renderAll();
+  requestAnimationFrame(() => { if (st) renderAll(); });
   st.undoStack.push(undoEntry);
   updateToolbar();
 }
@@ -782,10 +818,11 @@ function clearAll() {
       if (has) {
         entry.tiles.set(ty * cols + tx, st.mctx.getImageData(x, y, w, h));
         st.mctx.clearRect(x, y, w, h);
-        addDirty(x, y, w, h);
       }
     }
   }
+  renderAll();
+  requestAnimationFrame(() => { if (st) renderAll(); });
   pushUndo(entry);
 }
 
@@ -805,6 +842,7 @@ function setBrush(sizeFull, fromKeyboard) {
 // current brush diameter (screen pixels) instead of a number; auto-hides
 // shortly after the size stops changing.
 let brushBadgeTimer = 0;
+let lastRightClickMs = 0;
 function showBrushBadge() {
   if (!ui || !st) return;
   const d = Math.max(12, Math.round(st.brushFull * st.previewScale * st.view.scale));
@@ -825,12 +863,10 @@ function toggleShowMask() {
 
 function updateToolbar() {
   if (!st || !ui) return;
-  // B/W icons, fixed-size button: icon + text label change between paint/erase
-  // ("Paint" and "Erase" are both 5 chars -> constant button width)
-  ui.modeBtn.innerHTML = (st.mode === "paint" ? iconPaint() : iconErase()) +
-    '<span class="fm-modelabel">' + (st.mode === "paint" ? "Paint" : "Erase") + "</span>";
-  ui.modeBtn.classList.toggle("active", st.mode === "erase");
-  ui.modeBtn.dataset.tip = "Toggle Paint / Erase (X) - right button always erases";
+  const isErase = st.mode === "erase";
+  ui.modeBtn.classList.toggle("active", isErase);
+  ui.paintLabel.classList.toggle("active", !isErase);
+  ui.eraseLabel.classList.toggle("active", isErase);
   ui.fillToggle.classList.toggle("active", st.autoFill);
   ui.showMask.classList.toggle("active", st.maskLocked);
   ui.stBrush.textContent = st.brushFull + " px";
@@ -842,6 +878,8 @@ function wireUI() {
   const v = ui.viewport;
 
   ui.modeBtn.addEventListener("click", () => { if (st) toggleMode(); });
+  ui.paintLabel.addEventListener("click", () => { if (st && st.mode !== "paint") setMode("paint"); });
+  ui.eraseLabel.addEventListener("click", () => { if (st && st.mode !== "erase") setMode("erase"); });
   ui.clearAll.addEventListener("click", () => clearAll());
   ui.undoBtn.addEventListener("click", () => undo());
   ui.redoBtn.addEventListener("click", () => redo());
@@ -867,7 +905,8 @@ function wireUI() {
   ui.okBtn.addEventListener("click", () => saveAndClose());
   ui.overlay.addEventListener("contextmenu", (e) => e.preventDefault());
   v.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
-  // right-button double click: clear the whole mask
+  // right-button double click: clear the whole mask (dblclick is unreliable for
+  // right button in some browsers, so we also detect it manually on pointerdown)
   v.addEventListener("dblclick", (e) => {
     if (e.button === 2 && st) { e.preventDefault(); clearAll(); }
   });
@@ -897,7 +936,16 @@ function wireUI() {
     }
     if (st.drawing) return;
     if (e.button === 0) { startStroke(p, st.mode); return; }
-    if (e.button === 2) { startStroke(p, "erase"); return; }
+    if (e.button === 2) {
+      const now = Date.now();
+      if (now - lastRightClickMs < 350) {
+        lastRightClickMs = 0;
+        clearAll();
+        return;
+      }
+      lastRightClickMs = now;
+      startStroke(p, "erase"); return;
+    }
   });
 
   v.addEventListener("pointermove", (e) => {
@@ -907,15 +955,26 @@ function wireUI() {
       // follow the mouse (neither horizontally nor vertically) - only the
       // diameter changes. No center brush-size badge in this mode.
       setBrush(st.sizing.size + (st.sizing.y - e.clientY) * Math.max(1, st.fullH / 400), true);
+      // throttle a full repaint while sizing — dirty-rect-only updates can leave
+      // thin GPU seams that otherwise only disappear when the brush repaints.
+      if (!st._sizingRefresh) {
+        st._sizingRefresh = setTimeout(() => { if (st) { renderAll(); st._sizingRefresh = null; } }, 350);
+      }
       return;
     }
     const p = toCanvas(e);
     const c = st.cursor;
-    // after a ctrl-resize the brush center must stay put (no drift from the
-    // resize drag) until the user clicks again
-    if (!st.suppressFollow && (c.x !== p.x || c.y !== p.y || !c.inside)) {
-      c.x = p.x; c.y = p.y; c.inside = true;
+    const isInside = p.x >= 0 && p.x < st.pw && p.y >= 0 && p.y < st.ph;
+    if (!st.suppressFollow) {
+      if (c.inside !== isInside || c.x !== p.x || c.y !== p.y) {
+        c.x = p.x; c.y = p.y; c.inside = isInside;
+        st.cursorDirty = true;
+        ui.viewport.classList.toggle("fm-outside", !isInside);
+      }
+    } else if (c.inside !== isInside) {
+      c.inside = isInside;
       st.cursorDirty = true;
+      ui.viewport.classList.toggle("fm-outside", !isInside);
     }
     if (st.panning) {
       st.view.x = st.panning.vx + (e.clientX - st.panning.x);
@@ -930,12 +989,19 @@ function wireUI() {
     if (!st) return;
     if (st.sizing) {
       st.sizing = null;
+      if (st._sizingRefresh) { clearTimeout(st._sizingRefresh); st._sizingRefresh = null; }
       // resume normal cursor-follow and place the brush at the pointer so it
       // reappears immediately (it was anchored/frozen during the resize)
       const p = toCanvas(e);
       if (p) { st.cursor.x = p.x; st.cursor.y = p.y; st.cursor.inside = true; }
       st.suppressFollow = false;
       st.cursorDirty = true;
+      // GPU tiling can leave thin stale seams after a sizing drag; force a
+      // full repaint now and once more on the next frame to clear it. Without
+      // this the artifact stays until the cursor happens to repaint the tile.
+      renderAll();
+      requestAnimationFrame(() => { if (st) renderAll(); });
+      setTimeout(() => { if (st) renderAll(); }, 120);
       return;
     }
     if (st.panning) { st.panning = null; v.classList.remove("fm-panning"); return; }
@@ -946,6 +1012,15 @@ function wireUI() {
     if (!st) return;
     st.cursor.inside = false;
     st.cursorDirty = true;
+    ui.viewport.classList.add("fm-outside");
+  });
+  v.addEventListener("pointerenter", (e) => {
+    if (!st) return;
+    const p = toCanvas(e);
+    const isInside = p.x >= 0 && p.x < st.pw && p.y >= 0 && p.y < st.ph;
+    st.cursor.inside = isInside;
+    st.cursorDirty = true;
+    ui.viewport.classList.toggle("fm-outside", !isInside);
   });
 
   v.addEventListener("wheel", (e) => {
@@ -964,8 +1039,10 @@ function wireUI() {
 }
 
 /* ------------------------------ keyboard ------------------------------ */
+let lastUndoMs = 0;
 function onKey(e, down) {
   if (!st) return;
+  if (e.repeat) return;
   const k = e.key;
   const mod = e.ctrlKey || e.metaKey;
 
@@ -974,10 +1051,24 @@ function onKey(e, down) {
 
   if (mod && (k === "z" || k === "Z")) {
     e.preventDefault();
-    if (!st.drawing) { if (e.shiftKey) redo(); else undo(); }
+    if (!st.drawing) {
+      const now = Date.now();
+      if (now - lastUndoMs < 250) return;
+      lastUndoMs = now;
+      if (e.shiftKey) redo(); else undo();
+    }
     return;
   }
-  if (mod && (k === "y" || k === "Y")) { e.preventDefault(); if (!st.drawing) redo(); return; }
+  if (mod && (k === "y" || k === "Y")) {
+    e.preventDefault();
+    if (!st.drawing) {
+      const now = Date.now();
+      if (now - lastUndoMs < 250) return;
+      lastUndoMs = now;
+      redo();
+    }
+    return;
+  }
   if (mod && k === "0") { e.preventDefault(); fitView(); return; }
   if (mod && (k === "Delete")) { e.preventDefault(); if (!st.drawing) clearAll(); return; }
 
@@ -1104,10 +1195,35 @@ function fmEditorClick(node) {
   }
 }
 
+function wireImageMaskReset(node) {
+  // when the source image changes, drop the previously painted mask - it no
+  // longer corresponds to the new image (otherwise the old mask reappears)
+  try {
+    const imgW = (node.widgets || []).find((w) => w.name === "image");
+    if (!imgW || imgW._fmClear) return;
+    imgW._fmClear = true;
+    const orig = imgW.callback;
+    imgW.callback = function () {
+      const r = orig ? orig.apply(this, arguments) : undefined;
+      const cur = imgW.value;
+      if (imgW._fmLast === undefined) { imgW._fmLast = cur; return r; }
+      if (imgW._fmLast !== cur) {
+        const mp = (node.widgets || []).find((w) => w.name === "mask_path");
+        if (mp) {
+          mp.value = "";
+          if (typeof mp.callback === "function") { try { mp.callback.call(mp, mp.value); } catch (e) {} }
+        }
+      }
+      imgW._fmLast = cur;
+      return r;
+    };
+  } catch (e) { /* no-op */ }
+}
+
 function makeOpenButtonEl(node) {
   const el = document.createElement("button");
   el.type = "button";
-  el.textContent = "Edit Mask";
+  el.textContent = "Edit Mask v" + FM_VERSION;
   el.setAttribute("data-fastmask-open", "1"); // never let hideNativeMaskButtons() hide our own button
   el.style.cssText =
     "display:block;width:100%;height:32px;min-height:32px;max-height:32px;box-sizing:border-box;flex:none;" +
@@ -1129,33 +1245,252 @@ function makeVersionEl() {
   return el;
 }
 
-function addOpenButton(node) {
-  if (!node) return;
+// Strip any stale FastMask widget from a node: old canvas buttons that render
+// as a static "FastMask" oval, old DOM widgets, etc. We always re-add exactly
+// ONE fresh button afterwards, so removing everything stale first is safe.
+// Our own widget (fm_open) is preserved; fm_version is now removed (version
+// is shown inside the Edit Mask button).
+function stripStaleWidgets(node) {
   const widgets = node.widgets || [];
-
-  // Remove every previous FastMask open widget (old canvas buttons, old DOM
-  // widgets, stale cached ones - anything named/labelled "fastmask" or
-  // "fm_open"); we always re-add exactly ONE fresh button below.
   for (let i = widgets.length - 1; i >= 0; i--) {
     const w = widgets[i];
     if (!w) continue;
+    if (w.name === "fm_open") continue; // keep our own button
     const nm = String(w.name || "").toLowerCase();
     const lb = String(w.label || w.name || "").toLowerCase();
+    const elText = (w.element && w.element.textContent) ? w.element.textContent.toLowerCase() : "";
+    const safe = /upload|refresh|browse|choose|load|folder|preview|image/i.test(nm + " " + lb);
     const isFastmask =
-      nm.indexOf("fastmask") !== -1 || nm.indexOf("fm_open") !== -1 || nm.indexOf("fm_version") !== -1 ||
-      nm.indexOf("mask editor") !== -1 || nm.indexOf("edit mask") !== -1 || nm.indexOf("editor") !== -1 ||
-      lb.indexOf("fastmask") !== -1 || lb.indexOf("fm_open") !== -1 ||
-      lb.indexOf("mask editor") !== -1 || lb.indexOf("edit mask") !== -1;
-    // a stale canvas "button" widget renders as an oval snapshot on the
-    // canvas (the old FastMask button). Remove any canvas button that is NOT a
-    // built-in upload/refresh control.
-    const isStaleButton = w.type === "button" &&
-      !/upload|refresh|browse|choose|load|folder/i.test(nm + " " + lb);
+      nm.indexOf("fastmask") !== -1 || nm.indexOf("mask editor") !== -1 || nm.indexOf("edit mask") !== -1 ||
+      lb.indexOf("fastmask") !== -1 || lb.indexOf("edit mask") !== -1 ||
+      elText.indexOf("fastmask") !== -1 || elText.indexOf("edit mask") !== -1;
+    // a stale canvas "button" / DOM widget renders as an oval snapshot on the
+    // canvas (the old FastMask button). Remove any such widget that is NOT a
+    // built-in upload/refresh/preview control.
+    const isStaleButton = (w.type === "button" || w.type === "DOM" || w.type === "custom") && !safe;
     if (isFastmask || isStaleButton) {
       widgets.splice(i, 1);
       fmLog("previous FastMask widget removed:", w.name || w.label || "(unnamed)");
     }
   }
+}
+
+function alignPreviewTop(node) {
+  try {
+    const wOpen = node.widgets && node.widgets.find((x) => x.name === "fm_open");
+    const nodeEl = wOpen && wOpen.element ? (wOpen.element.closest("[data-node-id]") || document.querySelector(`[data-node-id="${node.id}"]`)) : document.querySelector(`[data-node-id="${node.id}"]`);
+    if (!nodeEl) return;
+    const preview = findNodePreview(nodeEl);
+    if (!preview) {
+      // preview not yet rendered — the gap is the collapsed button's slot (34px)
+      // pull the node content up by shrinking the node; the next call after
+      // preview appears will fine-tune.
+      try { if (node.size) { node.size[1] = Math.max(320, node.size[1] - 8); if (node.setDirtyCanvas) node.setDirtyCanvas(true,true); } } catch(e){}
+      return;
+    }
+    const pbox = preview.closest(".comfy-widget") || preview.parentElement;
+    if (pbox) {
+      pbox.style.setProperty("margin-top", "6px", "important");
+      pbox.style.setProperty("padding-top", "0", "important");
+      pbox.style.setProperty("top", "auto", "important");
+    }
+    // also collapse any empty widget row that LiteGraph left for the now-absolute button
+    try {
+      const widgetsEl = nodeEl.querySelector(".comfy-widgets, .node-widgets");
+      if (widgetsEl) widgetsEl.style.setProperty("gap", "0", "important");
+    } catch(e){}
+    // LiteGraph can vertically center the preview when the node is tall;
+    // force the node's content to start at the top
+    const inner = nodeEl.querySelector(".comfy-node-content, .node-content") || nodeEl;
+    if (inner) inner.style.setProperty("justify-content", "flex-start", "important");
+  } catch (e) {}
+}
+
+function positionBottom(node) {
+  try {
+    const wOpen = node.widgets && node.widgets.find((x) => x.name === "fm_open");
+    // Collapse the button's slot in the widget flow first, then add a small
+    // bottom gap. Previously the button's 34px slot left a blank stripe above
+    // the preview — now that it is absolute we reclaim that space.
+    try {
+      if (wOpen) {
+        try { wOpen.computeSize = () => [-1, 0]; if (wOpen.element && wOpen.element.parentElement) wOpen.element.parentElement.style.height = "0px"; } catch (e) {}
+      }
+      const minH = 340;
+      if (node.size && node.size[1] < minH) {
+        node.size[1] = minH;
+        if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+      }
+      // placeholder size is the collapsed button slot (34px) + LiteGraph's node
+      // padding; we want a small gap above the preview (handled in
+      // alignPreviewTop) and a clear gap between the 4096×4096 size line and
+      // the Edit Mask button — expand the node just enough to avoid overlap
+      const wantPad = 36;
+      if (!node._fmBottomPad) {
+        node._fmBottomPad = wantPad;
+        node.size[1] = (node.size[1] || 300) + wantPad;
+        if (node.onResize) try { node.onResize(node.size); } catch (e) {}
+        if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+      } else if (node._fmBottomPad !== wantPad) {
+        const delta = wantPad - (typeof node._fmBottomPad === "number" ? node._fmBottomPad : (node._fmBottomPad === true ? 62 : 44));
+        if (delta !== 0) {
+          node.size[1] = (node.size[1] || 300) + delta;
+          node._fmBottomPad = wantPad;
+          if (node.onResize) try { node.onResize(node.size); } catch (e) {}
+          if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+        }
+      }
+      // if we previously added a larger pad, shrink the gap above the image
+      if (node.size && node.size[1] > 520) {
+        // cap - the earlier 480+62 made the image sit in the middle with a large top gap
+        const extra = node.size[1] - 520;
+        if (extra > 0) {
+          node.size[1] -= Math.min(extra, 40);
+          if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+        }
+      }
+    } catch (e) {}
+    if (wOpen && wOpen.element) {
+      const box = wOpen.element.closest(".comfy-widget") || wOpen.element.parentElement;
+      if (box) {
+        box.style.setProperty("height", "34px", "important");
+        box.style.setProperty("top", "auto", "important");
+        box.style.setProperty("bottom", "8px", "important");
+        box.style.setProperty("left", "8px", "important");
+        box.style.setProperty("right", "8px", "important");
+        box.style.setProperty("width", "calc(100% - 16px)", "important");
+        box.style.setProperty("position", "absolute", "important");
+        box.style.setProperty("z-index", "2", "important");
+      }
+    }
+    alignPreviewTop(node);
+    // hide any stale version label or grey pill
+    const nodeEl = wOpen && wOpen.element ? (wOpen.element.closest("[data-node-id]") || document.querySelector(`[data-node-id="${node.id}"]`) || wOpen.element.parentElement) : document.querySelector(`[data-node-id="${node.id}"]`);
+    if (nodeEl) {
+      nodeEl.querySelectorAll("*").forEach((el) => {
+        if (el.id === "fm_open" || (el.closest && el.closest("#fm_open"))) return;
+        const t = (el.textContent || "").trim();
+        if ((t === "FastMask" || t.indexOf("FastMask v") === 0) && el.offsetWidth > 0 && el.offsetWidth < 180 && el.offsetHeight > 0 && el.offsetHeight < 32) {
+          // keep the button itself, hide only the old separate label/pill
+          if (el.id !== "fm_open") el.style.setProperty("display", "none", "important");
+        }
+      });
+    }
+  } catch (e) { /* no-op */ }
+}
+
+function findNodePreview(nodeEl) {
+  if (!nodeEl) return null;
+  // ComfyUI preview is usually an <img> with /view? or a <canvas>; the node's
+  // own preview area is the largest image/canvas inside the node.
+  const candidates = nodeEl.querySelectorAll("img, canvas");
+  let best = null, bestArea = 0;
+  for (const el of candidates) {
+    if (el.id === "fm_open" || (el.closest && el.closest("#fm_open"))) continue;
+    // preview images have a /view? src or are sizable
+    const isPreview = (el.tagName === "IMG" && el.src && el.src.includes("/view")) || el.tagName === "CANVAS";
+    if (!isPreview && el.tagName === "IMG") {
+      // fallback: any reasonably large image inside the node
+      if (el.naturalWidth < 32 && el.naturalHeight < 32) continue;
+    }
+    const area = (el.offsetWidth || 100) * (el.offsetHeight || 100);
+    if (area > bestArea) { bestArea = area; best = el; }
+  }
+  return best;
+}
+
+function enableNodeHoverBW(node) {
+  try {
+    const w = node.widgets && node.widgets.find((x) => x.name === "fm_open");
+    if (!w || !w.element) return;
+    const wrapper = w.element.closest(".comfy-widget") || w.element;
+    const nodeEl = wrapper.closest("[data-node-id]") || document.querySelector(`[data-node-id="${node.id}"]`) || wrapper.parentElement;
+    if (!nodeEl) return;
+    let preview = findNodePreview(nodeEl);
+    if (!preview) {
+      setTimeout(() => enableNodeHoverBW(node), 900);
+      return;
+    }
+    const box = preview.parentElement;
+    if (!box) return;
+    if (box._fmHoverWired) return;
+    box._fmHoverWired = true;
+    // use the preview's container for hover so it works for both img and canvas
+    const enter = async () => {
+      const mp = (node.widgets || []).find((x) => x.name === "mask_path");
+      if (!mp || !mp.value) { console.log("[FastMask] hover: no mask_path", node.id); return; }
+      if (box.querySelector(".fm-node-bw")) return;
+      const seg = String(mp.value).split("/");
+      const fname = seg.pop();
+      const sub = seg.join("/");
+      const url = api.apiURL("/view?" + new URLSearchParams({ filename: fname, subfolder: sub, type: "input" }));
+      console.log("[FastMask] hover load mask", url);
+      const ov = document.createElement("div");
+      ov.className = "fm-node-bw";
+      // exactly cover the preview image - use the preview's rendered rect, not the
+      // box (box includes the 4096x4096 size line and is taller)
+      const rect = preview.getBoundingClientRect();
+      const boxRect = box.getBoundingClientRect();
+      const left = rect.left - boxRect.left;
+      const top = rect.top - boxRect.top;
+      ov.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${rect.width}px;height:${rect.height}px;background:#000;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:10;overflow:hidden`;
+      const im = document.createElement("img");
+      im.src = url;
+      im.style.cssText = "width:100%;height:100%;display:block;object-fit:fill;filter:grayscale(1) contrast(1.2)";
+      im.onload = () => console.log("[FastMask] mask img loaded", im.naturalWidth);
+      im.onerror = () => console.log("[FastMask] mask load error", url);
+      ov.appendChild(im);
+      box.style.position = "relative";
+      box.appendChild(ov);
+      box._fmBwOv = ov;
+      // if the preview itself is the box (img directly), ensure ov covers it
+      if (preview.tagName === "IMG") {
+        // hide preview img while showing mask for true B/W toggle
+        preview.style.visibility = "hidden";
+      }
+    };
+    const leave = () => {
+      const ov = box._fmBwOv;
+      if (ov) { try { ov.remove(); } catch (e) {} box._fmBwOv = null; }
+      // restore preview visibility
+      const pv = findNodePreview(nodeEl);
+      if (pv && pv.tagName === "IMG") pv.style.visibility = "";
+    };
+    box.addEventListener("mouseenter", enter);
+    box.addEventListener("mouseleave", leave);
+    // also watch the preview itself if it's separate
+    preview.addEventListener("mouseenter", enter);
+    preview.addEventListener("mouseleave", leave);
+    // re-wire if preview changes (new image)
+    if (!box._fmObserver) {
+      const mo = new MutationObserver(() => {
+        // preview may be replaced; re-find on next hover
+        const np = findNodePreview(nodeEl);
+        if (np && np !== preview) {
+          box._fmHoverWired = false;
+          enableNodeHoverBW(node);
+        }
+      });
+      mo.observe(box, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
+      box._fmObserver = mo;
+    }
+  } catch (e) { /* no-op */ }
+}
+
+function addOpenButton(node) {
+  if (!node) return;
+  stripStaleWidgets(node);
+  // re-clean on the next frames too: some extensions (e.g. the built-in image
+  // upload preview) add their widgets only AFTER the node is configured, so a
+  // stale oval button can appear a tick later. Our own fm_open/fm_version are
+  // preserved by stripStaleWidgets.
+  try {
+    requestAnimationFrame(() => { stripStaleWidgets(node); positionBottom(node); enableNodeHoverBW(node); });
+    setTimeout(() => { stripStaleWidgets(node); positionBottom(node); enableNodeHoverBW(node); }, 0);
+    setTimeout(() => { stripStaleWidgets(node); positionBottom(node); enableNodeHoverBW(node); }, 300);
+    setTimeout(() => { positionBottom(node); enableNodeHoverBW(node); }, 900);
+    setTimeout(() => { positionBottom(node); }, 1800);
+  } catch (e) { /* no-op */ }
 
   // PROVEN PATTERN - exactly how one-node-flux-2-klein builds its working
   // buttons: a DOM widget whose body is a REAL <button> HTMLElement, passed
@@ -1169,28 +1504,21 @@ function addOpenButton(node) {
         getValue() { return null; },
         setValue() {},
         serialize: false,
-        computeSize() { return [-1, 34]; },
+        // no height in the widget flow — we pin it absolute at the bottom, so
+        // it must not reserve the 34px gap between mask_path and the image preview
+        computeSize() { return [-1, 0]; },
       });
       if (w) {
         w.name = "fm_open";
         if ("serialize" in w) w.serialize = false;
         if (w.serializeValue) w.serializeValue = () => undefined;
+        // collapse the widget slot height — otherwise LiteGraph leaves a blank
+        // stripe above the preview where the button used to sit
+        try { w.computeSize = () => [-1, 0]; if (w.element && w.element.parentElement) w.element.parentElement.style.height = "0px"; } catch (e) {}
         fmLog("DOM open button added:", node.id, node.comfyClass || node.type);
-        // version label at the very bottom of the node (always visible)
-        try {
-          const vel = makeVersionEl();
-          const vw = node.addDOMWidget("fm_version", "div", vel, {
-            getValue() { return null; },
-            setValue() {},
-            serialize: false,
-            computeSize() { return [-1, 16]; },
-          });
-          if (vw) {
-            vw.name = "fm_version";
-            if ("serialize" in vw) vw.serialize = false;
-            if (vw.serializeValue) vw.serializeValue = () => undefined;
-          }
-        } catch (e) { /* version label is cosmetic */ }
+        // version is now shown inside the Edit Mask button text; no separate label
+        // pin to bottom below the image preview with a small gap above
+        try { positionBottom(node); setTimeout(() => positionBottom(node), 50); setTimeout(() => positionBottom(node), 280); } catch (e) {}
         return;
       }
     } catch (e) {
@@ -1257,6 +1585,7 @@ app.registerExtension({
     nodeType.prototype.onNodeCreated = function () {
       const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
       addOpenButton(this);
+      wireImageMaskReset(this);
       return r;
     };
 
