@@ -99,10 +99,20 @@ class FastMaskEditor:
             out_mask = torch.from_numpy(mask).to(torch.float32)
         out_mask = out_mask.unsqueeze(0)
 
-        # UI preview (a node-on jelenik meg), mint a LoadImage-nel
+        # UI preview (shown on the node like LoadImage). If a mask exists,
+        # composite a semi-transparent magenta overlay so the painted area is
+        # visible directly on the node preview.
         preview = img.convert("RGB")
+        if mask is not None:
+            overlay = Image.new("RGB", preview.size, (255, 0, 200))
+            m8 = Image.fromarray((np.clip(mask, 0.0, 1.0) * 255.0).astype(np.uint8), "L")
+            if m8.size != preview.size:
+                m8 = m8.resize(preview.size, Image.BILINEAR)
+            preview = Image.composite(overlay, preview, m8.point(lambda v: int(v * 0.55)))
         save_name = None
         try:
+            painted = float((out_mask[0] > 0.5).float().mean())
+            print(f"[FastMask] mask: path={mask_path!r} painted={painted * 100:.1f}% size={w}x{h}")
             preview_dir = folder_paths.get_temp_directory()
             os.makedirs(preview_dir, exist_ok=True)
             if img_path:

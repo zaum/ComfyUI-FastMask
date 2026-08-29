@@ -43,10 +43,13 @@ MUST be kept:
    is passed. Buttons added via `node.addDOMWidget(...)` must therefore use:
 
    ```js
-   node.addDOMWidget("fastmask_open", "", el, { serialize: false, canvasOnly: false });
+   node.addDOMWidget("fastmask_open", "button", el, { serialize: false, canvasOnly: false, hideOnZoom: false });
    ```
 
-   Otherwise the button appears as a non-clickable, oval canvas drawing.
+   The frontend renders a DOM widget as an interactive Vue component only when
+   the widget **type** is a non-empty string AND `canvasOnly` is false
+   (`shouldRenderAsVue = !options.canvasOnly && !!type`). Otherwise the button
+   appears as a non-clickable, oval canvas drawing.
 
 5. **Deployment for local testing** — the live instance loads the node from
    `C:\Users\peter\ComfyUI-Installs\ComfyUI (v0.25.0)\ComfyUI\custom_nodes\ComfyUI-FastMask`

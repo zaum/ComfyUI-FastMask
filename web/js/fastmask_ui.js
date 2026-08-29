@@ -44,7 +44,10 @@ const CSS = `
 .fm-btn{position:relative;background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px;white-space:nowrap}
 .fm-btn.icon{padding:5px 9px;font-size:17px;line-height:1}
 .fm-btn.icon svg{display:block}
-.fm-sep{width:1px;height:22px;background:#3a3a3a;margin:0 4px}
+/* fixed-width mode toggle: only the icon changes between paint/erase */
+.fm-btn.fm-mode{width:36px;padding:5px 0;text-align:center}
+/* live brush size badge in the middle of the canvas */
+.fm-brushbadge{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;background:rgba(0,0,0,.75);color:#fff;border:1px solid #666;border-radius:8px;padding:8px 18px;font-size:20px;font-weight:600;pointer-events:none}
 .fm-gap{width:12px}
 .fm-btn:hover{background:#3a3a3a;border-color:#666}
 .fm-btn.active{background:#3d6ea5;border-color:#5a8fc4;color:#fff}
@@ -122,8 +125,16 @@ function iconFill() {
   return svgIcon('<path d="m19 11-8-8-8.6 8.6a1 1 0 0 0 0 1.4l5.6 5.6a1 1 0 0 0 1.4 0L19 11Z"/><path d="m5 2 5 5"/><path d="M21 15.5a2.5 2.5 0 0 1 0 5 2.5 2.5 0 0 1 0-5Z"/>');
 }
 function iconShowMask() {
-  // Photoshop-style: rectangle with a circle inside (mask channel toggle)
-  return svgIcon('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4.5"/>');
+  // Photoshop-style: rectangle with a dark-gray filled circle inside
+  return svgIcon('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4.5" fill="#555" stroke="none"/>');
+}
+function iconPaint() {
+  // B/W paint brush
+  return svgIcon('<path d="m15 5 4 4"/><path d="M13 7 4.5 15.5a2.1 2.1 0 0 0 3 3L16 10"/><path d="m13 7 4 4"/>');
+}
+function iconErase() {
+  // B/W eraser
+  return svgIcon('<path d="m7 21-4.3-4.3a1 1 0 0 1 0-1.4l9.6-9.6a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8L13 21"/><path d="M22 21H7"/><path d="m5 12 7 7"/>');
 }
 function iconFit() {
   return svgIcon('<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>');
@@ -131,29 +142,40 @@ function iconFit() {
 
 
 
-  const g1 = document.createElement("div");
-  g1.className = "fm-group";
-  // two-state paint/erase toggle (X toggles, right button always erases)
-  const modeBtn = btn("fmMode", "\uD83D\uDD8C Paint", "Toggle Paint / Erase (X) - right button always erases");
-  g1.append(modeBtn);
+  // THREE toolbar blocks: left (fit, hatch, mode) / centered (undo, redo) /
+  // right (clear, brush, fill, show-mask, cancel, OK).
+  const gLeft = document.createElement("div");
+  gLeft.className = "fm-group";
+  const fitBtn = btn("fmFit", iconFit(), "Fit image to window (" + MOD + "+0)", "icon");
+  const hatchBtn = btn("fmHatch", "", "Hatch line color (C)", "icon");
+  const swatch = document.createElement("span");
+  swatch.className = "fm-swatch";
+  hatchBtn.append(swatch);
+  const colorInput = document.createElement("input");
+  colorInput.type = "color";
+  colorInput.className = "fm-colinput";
+  colorInput.value = "#ff3fd8";
+  // two-state paint/erase toggle (X toggles, right button always erases).
+  // Icon-only with fixed width so the button never changes size when toggled.
+  const modeBtn = btn("fmMode", iconPaint(), "Toggle Paint / Erase (X) - right button always erases", "icon fm-mode");
+  gLeft.append(fitBtn, hatchBtn, colorInput, modeBtn);
 
-  // separator + undo / redo (icon-only)
-  const sep1 = document.createElement("div");
-  sep1.className = "fm-sep";
+  const spL = document.createElement("div");
+  spL.className = "fm-spacer";
+  const gMid = document.createElement("div");
+  gMid.className = "fm-group";
   const undoBtn = btn("fmUndo", iconUndo(), "Undo (" + MOD + "+Z)", "icon");
   const redoBtn = btn("fmRedo", iconRedo(), "Redo (" + MOD + "+Y / " + MOD + "+Shift+Z)", "icon");
-  g1.append(sep1, undoBtn, redoBtn);
+  gMid.append(undoBtn, redoBtn);
+  const spR = document.createElement("div");
+  spR.className = "fm-spacer";
 
-  // separator + clear all (icon-only)
-  const sep2 = document.createElement("div");
-  sep2.className = "fm-sep";
+  const gRight = document.createElement("div");
+  gRight.className = "fm-group";
   const clearAll = btn("fmClear", iconTrash(), "Clear all (" + MOD + "+Del)", "icon");
-  g1.append(sep2, clearAll);
-  const gap1 = document.createElement("div");
-  gap1.className = "fm-gap";
-  g1.append(gap1);
 
-  // brush size: label BEFORE the slider, thin track, tight value
+  // brush size: label BEFORE the slider, no pixel value next to it (the live
+  // size is shown in the middle of the canvas while changing)
   const brushLabel = document.createElement("span");
   brushLabel.className = "fm-brushlabel";
   brushLabel.textContent = "Brush size";
@@ -165,35 +187,14 @@ function iconFit() {
   brushSlider.max = "1000";
   brushSlider.value = "60";
   brushSlider.dataset.tip = "Brush size (" + MOD + "+left-drag, " + MOD + "+wheel, [ / ])";
-  const brushVal = document.createElement("span");
-  brushVal.className = "fm-brushval";
-  g1.append(brushLabel, brushSlider, brushVal);
 
-  // auto-fill toggle + show mask (Photoshop-style circle-in-rectangle icon)
   const fillToggle = btn("fmFill", iconFill(), "Auto-fill interior of closed shapes (F)", "icon");
   const showMask = btn("fmShow", iconShowMask(), "B/W mask - hover for preview, click to lock and edit (M)", "icon");
-  g1.append(fillToggle, showMask);
-
-  const spacer = document.createElement("div");
-  spacer.className = "fm-spacer";
-
-  // right group: fit (icon-only), hatch color (round swatch), cancel, OK
-  const g4 = document.createElement("div");
-  g4.className = "fm-group";
-  const fitBtn = btn("fmFit", iconFit(), "Fit image to window (" + MOD + "+0)", "icon");
-  const hatchBtn = btn("fmHatch", "", "Hatch line color (C)", "icon");
-  const swatch = document.createElement("span");
-  swatch.className = "fm-swatch";
-  hatchBtn.append(swatch);
-  const colorInput = document.createElement("input");
-  colorInput.type = "color";
-  colorInput.className = "fm-colinput";
-  colorInput.value = "#ff3fd8";
-  const cancelBtn = btn("fmCancel", "\u2715 Cancel", "Cancel (Esc)");
+  const cancelBtn = btn("fmCancel", "\u2715", "Cancel (Esc)", "icon");
   const okBtn = btn("fmOk", "\u2714 OK", "Save and close (Enter)", "ok");
-  g4.append(fitBtn, hatchBtn, colorInput, cancelBtn, okBtn);
+  gRight.append(clearAll, brushLabel, brushSlider, fillToggle, showMask, cancelBtn, okBtn);
 
-  topbar.append(g1, spacer, g4);
+  topbar.append(gLeft, spL, gMid, spR, gRight);
 
   const viewport = document.createElement("div");
   viewport.className = "fm-viewport";
@@ -204,7 +205,10 @@ function iconFit() {
   wrap.className = "fm-wrap fm-hidden";
   const canvas = document.createElement("canvas");
   wrap.appendChild(canvas);
-  viewport.append(loading, wrap);
+  // live brush size badge (center of the canvas, shown while changing)
+  const brushBadge = document.createElement("div");
+  brushBadge.className = "fm-brushbadge fm-hidden";
+  viewport.append(loading, wrap, brushBadge);
 
   const statusbar = document.createElement("div");
   statusbar.className = "fm-statusbar";
@@ -219,8 +223,8 @@ function iconFit() {
   document.body.appendChild(overlay);
 
   ui = {
-    overlay, topbar, viewport, wrap, canvas, loading,
-    modeBtn, clearAll, undoBtn, redoBtn, brushSlider, brushVal,
+    overlay, topbar, viewport, wrap, canvas, loading, brushBadge,
+    modeBtn, clearAll, undoBtn, redoBtn, brushSlider,
     hatchBtn, swatch, colorInput, fillToggle, showMask,
     fitBtn, cancelBtn, okBtn,
     stMode: statusbar.querySelector("#fmStMode"),
@@ -512,6 +516,7 @@ function cursorRect(c) {
 // Thin (screen-space ~1px) brush outline + center crosshair. Both are drawn in
 // the SAME canvas frame, so the crosshair can never lag behind the circle.
 function drawCursor() {
+  // Circle outline only - no crosshair in the middle.
   const v = st.vctx, c = st.cursor;
   const rad = brushRadiusCanvas();
   const lw = 1 / st.view.scale;
@@ -521,15 +526,6 @@ function drawCursor() {
   v.shadowColor = "rgba(0,0,0,.9)";
   v.shadowBlur = 2 / st.view.scale;
   v.beginPath(); v.arc(c.x, c.y, rad, 0, Math.PI * 2); v.stroke();
-  // crosshair: four lines from the center outwards, small gap in the middle
-  v.shadowBlur = 0;
-  const g = Math.max(rad * 0.16, 3 / st.view.scale);
-  v.beginPath();
-  v.moveTo(c.x - rad, c.y); v.lineTo(c.x - g, c.y);
-  v.moveTo(c.x + g, c.y);   v.lineTo(c.x + rad, c.y);
-  v.moveTo(c.x, c.y - rad); v.lineTo(c.x, c.y - g);
-  v.moveTo(c.x, c.y + g);   v.lineTo(c.x, c.y + rad);
-  v.stroke();
   v.restore();
 }
 
@@ -770,8 +766,20 @@ function toggleMode() { setMode(st.mode === "paint" ? "erase" : "paint"); }
 function setBrush(sizeFull) {
   st.brushFull = clamp(Math.round(sizeFull), 1, Math.min(st.fullW, st.fullH));
   ui.brushSlider.value = String(st.brushFull);
+  showBrushBadge();
   st.cursorDirty = true;
   updateToolbar();
+}
+
+// Live brush size display in the middle of the canvas; auto-hides shortly
+// after the size stops changing.
+let brushBadgeTimer = 0;
+function showBrushBadge() {
+  if (!ui || !st) return;
+  ui.brushBadge.textContent = st.brushFull + " px";
+  ui.brushBadge.classList.remove("fm-hidden");
+  clearTimeout(brushBadgeTimer);
+  brushBadgeTimer = setTimeout(() => ui.brushBadge.classList.add("fm-hidden"), 800);
 }
 
 function toggleFill() { st.autoFill = !st.autoFill; updateToolbar(); }
@@ -784,12 +792,12 @@ function toggleShowMask() {
 
 function updateToolbar() {
   if (!st || !ui) return;
-  ui.modeBtn.textContent = st.mode === "paint" ? "\uD83D\uDD8C Paint" : "\uD83E\uDDFD Erase";
+  // B/W icons, fixed-size button: only the icon and the active state change
+  ui.modeBtn.innerHTML = st.mode === "paint" ? iconPaint() : iconErase();
   ui.modeBtn.classList.toggle("active", st.mode === "erase");
   ui.modeBtn.dataset.tip = "Toggle Paint / Erase (X) - right button always erases";
   ui.fillToggle.classList.toggle("active", st.autoFill);
   ui.showMask.classList.toggle("active", st.maskLocked);
-  ui.brushVal.textContent = st.brushFull + " px";
   ui.stMode.textContent = st.mode === "paint" ? "Paint" : "Erase";
   ui.stBrush.textContent = st.brushFull + " px";
   ui.stZoom.textContent = Math.round(st.view.scale * 100) + "%";
@@ -825,6 +833,10 @@ function wireUI() {
   ui.okBtn.addEventListener("click", () => saveAndClose());
   ui.overlay.addEventListener("contextmenu", (e) => e.preventDefault());
   v.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
+  // right-button double click: clear the whole mask
+  v.addEventListener("dblclick", (e) => {
+    if (e.button === 2 && st) { e.preventDefault(); clearAll(); }
+  });
 
   v.addEventListener("pointerdown", (e) => {
     if (!st) return;
@@ -1070,14 +1082,17 @@ function addOpenButton(node) {
 
   // PRIMARY: a real HTML button as a DOM widget. canvasOnly MUST be false,
   // otherwise the new frontend renders it as a static, non-interactive
-  // canvas snapshot (that was the "oval button" bug).
+  // canvas snapshot (that was the "oval button" bug). The widget also needs a
+  // REAL type string: shouldRenderAsVue = !canvasOnly && !!type -> Vue-rendered
+  // DOM widgets (like the audio widget) are fully interactive; an empty type
+  // falls back to the legacy path where clicks may be swallowed.
   if (typeof node.addDOMWidget === "function") {
     try {
       const el = makeOpenButtonEl(node);
-      const w = node.addDOMWidget("fastmask_open", "", el, { serialize: false, canvasOnly: false });
+      const w = node.addDOMWidget("fastmask_open", "button", el, { serialize: false, canvasOnly: false, hideOnZoom: false });
       if (w) {
         w.label = "";
-        if (w.options) w.options.canvasOnly = false;
+        if (w.options) { w.options.canvasOnly = false; w.options.hideOnZoom = false; }
         try { w.computeSize = () => [0, 32]; } catch (e) {}
         if (w.serializeValue) w.serializeValue = () => undefined;
         if ("serialize" in w) w.serialize = false;
