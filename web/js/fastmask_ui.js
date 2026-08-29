@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.1.2";
+const FM_VERSION = "1.1.3";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -96,17 +96,7 @@ function btn(id, html, tip, cls) {
   return b;
 }
 
-/* ------------------------------ DOM construction ------------------------------ */
-function buildUI() {
-  if (ui) return;
-  injectCSS();
-
-  const overlay = document.createElement("div");
-  overlay.className = "fm-overlay fm-hidden";
-
-  const topbar = document.createElement("div");
-  topbar.className = "fm-topbar";
-/* --- toolbar SVG icons (inline, inherit currentColor) --- */
+/* --- toolbar SVG icons (module scope: also used by updateToolbar) --- */
 function svgIcon(paths, viewBox) {
   return '<svg width="18" height="18" viewBox="' + (viewBox || "0 0 24 24") +
     '" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + paths + "</svg>";
@@ -140,7 +130,16 @@ function iconFit() {
   return svgIcon('<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>');
 }
 
+/* ------------------------------ DOM construction ------------------------------ */
+function buildUI() {
+  if (ui) return;
+  injectCSS();
 
+  const overlay = document.createElement("div");
+  overlay.className = "fm-overlay fm-hidden";
+
+  const topbar = document.createElement("div");
+  topbar.className = "fm-topbar";
 
   // THREE toolbar blocks: left (fit, hatch, mode) / centered (undo, redo) /
   // right (clear, brush, fill, show-mask, cancel, OK).
