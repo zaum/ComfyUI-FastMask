@@ -64,9 +64,57 @@ MUST be kept:
    (a plain copy, not a junction). After editing, copy the whole repo content
    (except `.git`, `__pycache__`) there and reload the frontend.
 
+   **MANDATORY: after EVERY fix/change** copy the repo to the live folder so the
+   running instance actually uses the new code. From the project root run:
+
+   ```powershell
+   robocopy "I:\APPLICATIONS\Comfy Mask Editor\fastmask" "C:\Users\peter\ComfyUI-Installs\ComfyUI (v0.25.0)\ComfyUI\custom_nodes\ComfyUI-FastMask" /MIR /XD .git __pycache__ /XF *.pyc
+   ```
+
+   Then reload the ComfyUI frontend (F5) so the cache-safe `no-store` middleware
+   serves the updated `fastmask_ui.js`.
+
+   **IMPORTANT — Python (`nodes.py` / `__init__.py`) changes need a SERVER
+   RESTART (or "Refresh Custom Nodes" in the UI).** Pressing F5 only reloads the
+   frontend JS; it does NOT reload the Python backend. If a `nodes.py` fix "does
+   not take effect", the old Python is still running — restart ComfyUI.
+
+## Manual verification workflow (run after every change)
+
+After copying + restarting, verify the node end-to-end. Manually (or with a
+ComfyUI MCP / API if available):
+
+1. **New workflow** — open a fresh, empty workflow in ComfyUI (Menu → New).
+2. **Refresh** — click "Refresh" (or restart) so the FastMaskEditor node is
+   registered.
+3. **Build the test graph**:
+   - Add a **FastMaskEditor** node (it has the "Edit Mask" button + version
+     label at the bottom, below the image preview).
+   - Add an **Preview Image** node and connect FastMaskEditor `image` →
+     Preview Image `images`.
+   - Add a **Preview Mask** node and connect FastMaskEditor `mask` →
+     Preview Mask `mask`.
+4. **Smoke test the editor**:
+   - Click **Edit Mask** → the full-screen editor opens.
+   - Paint with left-drag, erase with right-drag, toggle Paint/Erase (X),
+     double right-click = clear all, Fit-to-page in the middle block.
+   - Click **OK** (or Enter) → mask is uploaded and `mask_path` is set.
+5. **Run the workflow** (Queue Prompt) and confirm:
+   - The FastMaskEditor node still shows the ORIGINAL image (it must NOT
+     disappear / go blank).
+   - Preview Image shows the source image.
+   - Preview Mask shows the painted mask (not an empty black image).
+   - There is NO leftover oval "FastMask" button anywhere on the node.
+
+If the image disappears after Queue Prompt, the Python change did not load →
+restart ComfyUI and retry.
+
 ## Extension version history / pitfalls found
 
 - Cached old JS silently shadowed all fixes → filename was changed once to
   `fastmask_ui.js` (new URL = fresh load) and `no-store` was added.
 - `beforeRegisterNodeDef` + `nodeCreated` + `setup` (graph scan) are all used to
   attach the open button; all three must stay.
+- **Python changes require a ComfyUI restart** (F5 alone is not enough) — this
+  was the cause of the "image deleted after run" symptom persisting across
+  fixes.

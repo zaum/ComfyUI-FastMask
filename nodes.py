@@ -52,22 +52,47 @@ class FastMaskEditor:
     )
 
     def load(self, image, mask_path="", image_opt=None):
-        if image_opt is not None:
-            return self._load_from_tensor(image_opt, mask_path)
+        import time, traceback
+        try:
+            if image_opt is not None:
+                return self._load_from_tensor(image_opt, mask_path)
 
-        img_path = folder_paths.get_annotated_filepath(image)
-        img = Image.open(img_path)
-        img = ImageOps.exif_transpose(img)
-        if img.mode == "I":
-            img = img.point(lambda i: i * (1 / 255)).convert("L")
+            img_path = folder_paths.get_annotated_filepath(image)
+            img = Image.open(img_path)
+            img = ImageOps.exif_transpose(img)
+            if img.mode == "I":
+                img = img.point(lambda i: i * (1 / 255)).convert("L")
 
-        out_image = img.convert("RGB")
-        w, h = out_image.size
-        out_image = np.array(out_image).astype(np.float32) / 255.0
-        out_image = torch.from_numpy(out_image)[None,]
+            out_image = img.convert("RGB")
+            w, h = out_image.size
+            out_image = np.array(out_image).astype(np.float32) / 255.0
+            out_image = torch.from_numpy(out_image)[None,]
 
-        mask, save_name = self._load_mask_and_preview(img, (w, h), mask_path, img_path)
-        return self._finalize(out_image, mask, save_name)
+            mask, ui_images = self._load_mask_and_preview(img, (w, h), mask_path, img_path, image)
+            return self._finalize(out_image, mask, ui_images)
+        except Exception as e:
+            print(f"[FastMask] load() failed: {e}")
+            traceback.print_exc()
+            # Always return a valid preview so the node doesn't show "failed to load".
+            preview_dir = os.path.join(folder_paths.get_input_directory(), "fastmask")
+            os.makedirs(preview_dir, exist_ok=True)
+            save_name = f"fastmask_error_{int(time.time() * 1000) % 1000000}.png"
+            w, h = 256, 256
+            if image_opt is not None:
+                t = image_opt[0].detach().clamp(0, 1).cpu().numpy()
+                h, w = t.shape[0], t.shape[1]
+            err_img = Image.new("RGB", (w, h), (64, 0, 0))
+            try:
+                err_img.save(os.path.join(preview_dir, save_name), format="PNG", compress_level=1)
+            except Exception:
+                save_name = None
+            ui_images = [{"filename": save_name, "subfolder": "fastmask", "type": "input"}] if save_name else []
+            if image_opt is not None:
+                out_image = torch.from_numpy(image_opt[0].detach().cpu().numpy().astype(np.float32))[None,]
+            else:
+                out_image = torch.zeros((1, h, w, 3), dtype=torch.float32)
+            out_mask = torch.zeros((1, h, w), dtype=torch.float32)
+            return {"ui": {"images": ui_images}, "result": (out_image, out_mask)}
 
     def _load_from_tensor(self, image_opt, mask_path=""):
         """Works from a connected IMAGE tensor (B,H,W,C, 0..1 float)."""
@@ -76,11 +101,26 @@ class FastMaskEditor:
         out_image = torch.from_numpy(t.astype(np.float32))[None,]
 
         pil = Image.fromarray((t * 255.0).round().astype(np.uint8), "RGB")
-        mask, save_name = self._load_mask_and_preview(pil, (w, h), mask_path, None)
-        return self._finalize(out_image, mask, save_name)
+        mask, ui_images = self._load_mask_and_preview(pil, (w, h), mask_path, None, None)
+        return self._finalize(out_image, mask, ui_images)
 
-    def _load_mask_and_preview(self, img, size, mask_path, img_path):
-        """Load the mask (mask_path) + save the UI preview to temp."""
+    def _source_ui(self, image_value):
+        """Build the ui.images reference for the ORIGINAL source image so the
+        node always shows the real image (never a fragile generated preview)."""
+        if not image_value:
+            return None
+        parts = str(image_value).split("/")
+        fname = parts[-1]
+        sub = "/".join(parts[:-1])
+        return [{"filename": fname, "subfolder": sub, "type": "input"}]
+
+    def _load_mask_and_preview(self, img, size, mask_path, img_path, image_value=None):
+        """Load the mask (mask_path) and decide what to show on the node.
+
+        For a file-based image we simply show the ORIGINAL source image on the
+        node (reliable, never disappears). When the image comes from a connected
+        tensor (no source file) we generate a preview PNG instead.
+        """
         w, h = size
         mask = None
         if mask_path:
@@ -99,9 +139,14 @@ class FastMaskEditor:
             out_mask = torch.from_numpy(mask).to(torch.float32)
         out_mask = out_mask.unsqueeze(0)
 
-        # UI preview (shown on the node like LoadImage). If a mask exists,
-        # composite a semi-transparent magenta overlay so the painted area is
-        # visible directly on the node preview.
+        # File-based image: show the original on the node (always available).
+        if image_value:
+            ui_images = self._source_ui(image_value)
+            print(f"[FastMask] mask: path={mask_path!r} painted={(float((out_mask[0] > 0.5).float().mean()) * 100):.1f}% size={w}x{h}")
+            return out_mask, ui_images or []
+
+        # Tensor-based image (no source file): generate a preview PNG so the
+        # node has something to display.
         preview = img.convert("RGB")
         if mask is not None:
             overlay = Image.new("RGB", preview.size, (255, 0, 200))
@@ -113,39 +158,24 @@ class FastMaskEditor:
         try:
             painted = float((out_mask[0] > 0.5).float().mean())
             print(f"[FastMask] mask: path={mask_path!r} painted={painted * 100:.1f}% size={w}x{h}")
-            preview_dir = folder_paths.get_temp_directory()
+            preview_dir = os.path.join(folder_paths.get_input_directory(), "fastmask")
             os.makedirs(preview_dir, exist_ok=True)
-            m = hashlib.sha256()
-            if img_path:
-                with open(img_path, "rb") as f:
-                    m.update(f.read())
-            else:
-                buf = io.BytesIO()
-                preview.save(buf, format="PNG", compress_level=1)
-                m.update(buf.getvalue())
-            # include the painted-mask state in the name, so the frontend
-            # gets a NEW url (no stale cache) after every mask edit
+            buf = io.BytesIO()
+            preview.save(buf, format="PNG", compress_level=1)
+            m = hashlib.sha256(buf.getvalue())
             if mask_path:
                 mpath = folder_paths.get_annotated_filepath(mask_path)
                 if os.path.isfile(mpath):
                     m.update(str(os.path.getmtime(mpath)).encode())
             save_name = "fastmask_preview_%s.png" % m.hexdigest()[:16]
-            # ALWAYS write the preview file. Previously the file-loader branch
-            # only computed the name without saving -> /view 404 -> frontend
-            # shows "failed to load image" and the node preview disappears.
             preview.save(os.path.join(preview_dir, save_name), format="PNG", compress_level=1)
         except Exception as e:
             print(f"[FastMask] preview save failed: {e}")
             save_name = None
-        return out_mask, save_name
+        return out_mask, ([{"filename": save_name, "subfolder": "fastmask", "type": "input"}] if save_name else [])
 
-    def _finalize(self, out_image, out_mask, save_name):
-        ui_images = (
-            [{"filename": save_name, "subfolder": "", "type": "temp"}]
-            if save_name
-            else []
-        )
-        return {"ui": {"images": ui_images}, "result": (out_image, out_mask)}
+    def _finalize(self, out_image, out_mask, ui_images):
+        return {"ui": {"images": ui_images or []}, "result": (out_image, out_mask)}
 
     @classmethod
     def IS_CHANGED(s, image, mask_path=""):

@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.2.2";
+const FM_VERSION = "1.2.8";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -115,13 +115,17 @@ function iconTrash() {
   return svgIcon('<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/>');
 }
 function iconFill() {
-  // paint bucket with drop
-  return svgIcon('<path d="m19 11-8-8-8.6 8.6a1 1 0 0 0 0 1.4l5.6 5.6a1 1 0 0 0 1.4 0L19 11Z"/><path d="m5 2 5 5"/><path d="M21 15.5a2.5 2.5 0 0 1 0 5 2.5 2.5 0 0 1 0-5Z"/>');
+  // a circle filled with a diagonal hatch pattern: auto-fill the interior of
+  // a closed shape
+  return svgIcon(
+    '<defs><pattern id="fmFillHatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">' +
+    '<line x1="0" y1="0" x2="0" y2="4" stroke="currentColor" stroke-width="1.3"/></pattern></defs>' +
+    '<circle cx="12" cy="12" r="9" fill="url(#fmFillHatch)" stroke="currentColor" stroke-width="2"/>'
+  );
 }
 function iconShowMask() {
-  // Photoshop-style: rectangle with a dark-gray filled circle inside,
-  // the circle has a white outline so it stays visible on dark previews
-  return svgIcon('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4.5" fill="#555" stroke="#fff" stroke-width="1.4"/>');
+  // wider rectangle with a SOLID filled circle inside (mask indicator)
+  return svgIcon('<rect x="2" y="7" width="20" height="10" rx="2"/><circle cx="12" cy="12" r="4" fill="currentColor" stroke="currentColor" stroke-width="1.4"/>');
 }
 function iconPaint() {
   // B/W paint brush
@@ -146,9 +150,8 @@ function buildUI() {
   const topbar = document.createElement("div");
   topbar.className = "fm-topbar";
 
-  // THREE toolbar blocks: left (undo, redo, clear all) / centered
-  // (brush size, fill, show mask) / right (fit, hatch color, mode,
-  // cancel, OK).
+  // THREE toolbar blocks: left (undo, redo, clear all) / centered (fit,
+  // brush size, fill, show mask, hatch color, mode toggle) / right (cancel, OK).
   const gLeft = document.createElement("div");
   gLeft.className = "fm-group";
   const undoBtn = btn("fmUndo", iconUndo(), "Undo (" + MOD + "+Z)", "icon");
@@ -160,6 +163,7 @@ function buildUI() {
   spL.className = "fm-spacer";
   const gMid = document.createElement("div");
   gMid.className = "fm-group";
+  gMid.style.gap = "16px";
   // brush size: label BEFORE the slider, no pixel value next to it (the live
   // size is shown in the middle of the canvas while changing)
   const brushLabel = document.createElement("span");
@@ -175,7 +179,6 @@ function buildUI() {
   brushSlider.dataset.tip = "Brush size (" + MOD + "+left-drag, " + MOD + "+wheel, [ / ])";
   const fillToggle = btn("fmFill", iconFill(), "Auto-fill interior of closed shapes (F)", "icon");
   const showMask = btn("fmShow", iconShowMask(), "B/W mask - hover for preview, click to lock and edit (M)", "icon");
-  gMid.append(brushLabel, brushSlider, fillToggle, showMask);
   const spR = document.createElement("div");
   spR.className = "fm-spacer";
 
@@ -195,7 +198,11 @@ function buildUI() {
   const modeBtn = btn("fmMode", iconPaint(), "Toggle Paint / Erase (X) - right button always erases", "icon fm-mode");
   const cancelBtn = btn("fmCancel", "Cancel", "Cancel (Esc)");
   const okBtn = btn("fmOk", "\u2714 OK", "Save and close (Enter)", "ok");
-  gRight.append(fitBtn, hatchBtn, colorInput, modeBtn, cancelBtn, okBtn);
+  gRight.append(cancelBtn, okBtn);
+
+  // middle block (centered): fit-to-page FIRST, then brush size, fill,
+  // hatch color, mode toggle, and the B/W mask button LAST (rightmost)
+  gMid.append(fitBtn, brushLabel, brushSlider, fillToggle, hatchBtn, colorInput, modeBtn, showMask);
 
   topbar.append(gLeft, spL, gMid, spR, gRight);
 
@@ -216,18 +223,17 @@ function buildUI() {
   const statusbar = document.createElement("div");
   statusbar.className = "fm-statusbar";
   statusbar.innerHTML =
-    '<span>Mode: <b id="fmStMode">Paint</b></span>' +
     '<span>Brush: <b id="fmStBrush"></b></span>' +
     '<span>Zoom: <b id="fmStZoom"></b></span>' +
     '<span>Image: <b id="fmStSize"></b></span>' +
     '<span class="fm-hint">' +
-      '<kbd>' + MOD + '</kbd>+<kbd>left-drag</kbd>: brush size &bull; ' +
-      '<kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>: brush &bull; ' +
-      '<kbd>wheel</kbd>: zoom &bull; ' +
-      '<kbd>Space</kbd> / <kbd>middle button</kbd>: pan &bull; ' +
-      '<kbd>right button</kbd>: erase &bull; ' +
-      '<kbd>X</kbd>: mode &bull; ' +
-      '<kbd>' + MOD + '</kbd>+<kbd>Z</kbd> / <kbd>' + MOD + '</kbd>+<kbd>Y</kbd>: undo/redo</span>';
+       '<kbd>' + MOD + '</kbd>+<kbd>left-drag</kbd>: brush size   ' +
+       '<kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>: brush   ' +
+       '<kbd>wheel</kbd>: zoom   ' +
+       '<kbd>Space</kbd> / <kbd>middle button</kbd>: pan   ' +
+       '<kbd>right button</kbd>: erase   ' +
+       '<kbd>X</kbd>: mode   ' +
+       '<kbd>' + MOD + '</kbd>+<kbd>Z</kbd> / <kbd>' + MOD + '</kbd>+<kbd>Y</kbd>: undo/redo</span>';
 
   overlay.append(topbar, viewport, statusbar);
   document.body.appendChild(overlay);
@@ -237,7 +243,6 @@ function buildUI() {
     modeBtn, clearAll, undoBtn, redoBtn, brushSlider,
     hatchBtn, swatch, colorInput, fillToggle, showMask,
     fitBtn, cancelBtn, okBtn,
-    stMode: statusbar.querySelector("#fmStMode"),
     stBrush: statusbar.querySelector("#fmStBrush"),
     stZoom: statusbar.querySelector("#fmStZoom"),
     stSize: statusbar.querySelector("#fmStSize"),
@@ -326,6 +331,7 @@ async function openEditor(node) {
     strokeTiles: null,
     drawing: null,          // { mode }
     panning: null, sizing: null, spaceDown: false,
+    suppressFollow: false,  // keep brush center fixed right after a ctrl-resize
     last: null,
     ptsX: new Float32Array(256), ptsY: new Float32Array(256), ptsN: 0,
     strokeBBox: null,
@@ -827,7 +833,6 @@ function updateToolbar() {
   ui.modeBtn.dataset.tip = "Toggle Paint / Erase (X) - right button always erases";
   ui.fillToggle.classList.toggle("active", st.autoFill);
   ui.showMask.classList.toggle("active", st.maskLocked);
-  ui.stMode.textContent = st.mode === "paint" ? "Paint" : "Erase";
   ui.stBrush.textContent = st.brushFull + " px";
   ui.stZoom.textContent = Math.round(st.view.scale * 100) + "%";
 }
@@ -872,10 +877,16 @@ function wireUI() {
     e.preventDefault();
     v.setPointerCapture(e.pointerId);
     if (st.sizing || st.panning) return;
+    st.suppressFollow = false; // any new press resumes normal cursor-follow
     const p = toCanvas(e);
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.button === 0) {
+      const p = toCanvas(e);
+      // anchor the brush center where the resize starts; it stays fixed while
+      // the diameter changes (the circle grows/shrinks from its center).
+      st.cursor.x = p.x; st.cursor.y = p.y; st.cursor.inside = true; st.cursorDirty = true;
       st.sizing = { y: e.clientY, size: st.brushFull };
+      st.suppressFollow = true; // don't let the brush follow the mouse until next click
       return;
     }
     if (e.button === 1 || (st.spaceDown && e.button === 0)) {
@@ -891,15 +902,20 @@ function wireUI() {
 
   v.addEventListener("pointermove", (e) => {
     if (!st) return;
+    if (st.sizing) {
+      // resizing anchored at the brush center: the cursor/center does NOT
+      // follow the mouse (neither horizontally nor vertically) - only the
+      // diameter changes. No center brush-size badge in this mode.
+      setBrush(st.sizing.size + (st.sizing.y - e.clientY) * Math.max(1, st.fullH / 400), true);
+      return;
+    }
     const p = toCanvas(e);
     const c = st.cursor;
-    if (c.x !== p.x || c.y !== p.y || !c.inside) {
+    // after a ctrl-resize the brush center must stay put (no drift from the
+    // resize drag) until the user clicks again
+    if (!st.suppressFollow && (c.x !== p.x || c.y !== p.y || !c.inside)) {
       c.x = p.x; c.y = p.y; c.inside = true;
       st.cursorDirty = true;
-    }
-    if (st.sizing) {
-      setBrush(st.sizing.size + (st.sizing.y - e.clientY) * Math.max(1, st.fullH / 400));
-      return;
     }
     if (st.panning) {
       st.view.x = st.panning.vx + (e.clientX - st.panning.x);
@@ -910,9 +926,18 @@ function wireUI() {
     if (st.drawing) strokeTo(p);
   });
 
-  v.addEventListener("pointerup", () => {
+  v.addEventListener("pointerup", (e) => {
     if (!st) return;
-    if (st.sizing) { st.sizing = null; return; }
+    if (st.sizing) {
+      st.sizing = null;
+      // resume normal cursor-follow and place the brush at the pointer so it
+      // reappears immediately (it was anchored/frozen during the resize)
+      const p = toCanvas(e);
+      if (p) { st.cursor.x = p.x; st.cursor.y = p.y; st.cursor.inside = true; }
+      st.suppressFollow = false;
+      st.cursorDirty = true;
+      return;
+    }
     if (st.panning) { st.panning = null; v.classList.remove("fm-panning"); return; }
     if (st.drawing) endStroke();
   });
@@ -928,7 +953,7 @@ function wireUI() {
     e.preventDefault();
     const mod = e.ctrlKey || e.metaKey;
     if (mod) {
-      setBrush(st.brushFull * (e.deltaY < 0 ? 1.08 : 1 / 1.08));
+      setBrush(st.brushFull * (e.deltaY < 0 ? 1.08 : 1 / 1.08), true);
       return;
     }
     zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15);
@@ -1038,7 +1063,12 @@ async function saveAndClose() {
     const r = await api.fetchApi("/upload/image", { method: "POST", body: fd });
     if (!r.ok) throw new Error("upload failed: " + r.status);
     const j = await r.json();
-    const path = j.subfolder ? j.subfolder + "/" + j.filename : j.filename;
+    // ComfyUI's /upload/image responds with `name` (not `filename`), and
+    // `subfolder` may be null when at the root. Build the mask_path robustly.
+    const fname = j.name || j.filename;
+    if (!fname) throw new Error("upload response missing filename");
+    const sub = j.subfolder || "";
+    const path = sub ? sub + "/" + fname : fname;
     const w = (st.node.widgets || []).find((w) => w.name === "mask_path");
     if (w) {
       w.value = path;
@@ -1077,15 +1107,25 @@ function fmEditorClick(node) {
 function makeOpenButtonEl(node) {
   const el = document.createElement("button");
   el.type = "button";
-  el.textContent = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
+  el.textContent = "Edit Mask";
+  el.setAttribute("data-fastmask-open", "1"); // never let hideNativeMaskButtons() hide our own button
   el.style.cssText =
-    "display:block;width:100%;height:100%;box-sizing:border-box;" +
-    "background:#2a2a2a;color:#eee;border:1px solid #555;border-radius:6px;" +
-    "cursor:pointer;font-size:13px;padding:4px 10px;font-family:inherit;text-align:center;pointer-events:auto";
-  el.addEventListener("mouseenter", () => { el.style.background = "#3a3a3a"; el.style.borderColor = "#777"; });
-  el.addEventListener("mouseleave", () => { el.style.background = "#2a2a2a"; el.style.borderColor = "#555"; });
+    "display:block;width:100%;height:32px;min-height:32px;max-height:32px;box-sizing:border-box;flex:none;" +
+    "background:#2563eb;color:#fff;border:1px solid #1d4ed8;border-radius:6px;" +
+    "cursor:pointer;font-size:13px;font-weight:600;padding:0 10px;font-family:inherit;line-height:30px;text-align:center;pointer-events:auto";
+  el.addEventListener("mouseenter", () => { el.style.background = "#1d4ed8"; });
+  el.addEventListener("mouseleave", () => { el.style.background = "#2563eb"; });
   el.addEventListener("pointerdown", (e) => e.stopPropagation()); // do not drag the node
   el.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); fmEditorClick(node); });
+  return el;
+}
+
+function makeVersionEl() {
+  const el = document.createElement("div");
+  el.textContent = "FastMask v" + FM_VERSION;
+  el.style.cssText =
+    "text-align:center;color:#8cf;font:600 11px/1.3 system-ui,Segoe UI,sans-serif;" +
+    "padding:2px 0 1px;box-sizing:border-box;pointer-events:none;user-select:none";
   return el;
 }
 
@@ -1101,8 +1141,17 @@ function addOpenButton(node) {
     if (!w) continue;
     const nm = String(w.name || "").toLowerCase();
     const lb = String(w.label || w.name || "").toLowerCase();
-    if (nm.indexOf("fastmask") !== -1 || nm.indexOf("fm_open") !== -1 ||
-        lb.indexOf("fastmask") !== -1) {
+    const isFastmask =
+      nm.indexOf("fastmask") !== -1 || nm.indexOf("fm_open") !== -1 || nm.indexOf("fm_version") !== -1 ||
+      nm.indexOf("mask editor") !== -1 || nm.indexOf("edit mask") !== -1 || nm.indexOf("editor") !== -1 ||
+      lb.indexOf("fastmask") !== -1 || lb.indexOf("fm_open") !== -1 ||
+      lb.indexOf("mask editor") !== -1 || lb.indexOf("edit mask") !== -1;
+    // a stale canvas "button" widget renders as an oval snapshot on the
+    // canvas (the old FastMask button). Remove any canvas button that is NOT a
+    // built-in upload/refresh control.
+    const isStaleButton = w.type === "button" &&
+      !/upload|refresh|browse|choose|load|folder/i.test(nm + " " + lb);
+    if (isFastmask || isStaleButton) {
       widgets.splice(i, 1);
       fmLog("previous FastMask widget removed:", w.name || w.label || "(unnamed)");
     }
@@ -1127,6 +1176,21 @@ function addOpenButton(node) {
         if ("serialize" in w) w.serialize = false;
         if (w.serializeValue) w.serializeValue = () => undefined;
         fmLog("DOM open button added:", node.id, node.comfyClass || node.type);
+        // version label at the very bottom of the node (always visible)
+        try {
+          const vel = makeVersionEl();
+          const vw = node.addDOMWidget("fm_version", "div", vel, {
+            getValue() { return null; },
+            setValue() {},
+            serialize: false,
+            computeSize() { return [-1, 16]; },
+          });
+          if (vw) {
+            vw.name = "fm_version";
+            if ("serialize" in vw) vw.serialize = false;
+            if (vw.serializeValue) vw.serializeValue = () => undefined;
+          }
+        } catch (e) { /* version label is cosmetic */ }
         return;
       }
     } catch (e) {
@@ -1160,10 +1224,14 @@ function scanExistingNodes() {
 /* Hide the built-in "Edit or mask image" pencil button that the default
    frontend overlays on image previews (we provide our own editor). */
 function hideNativeMaskButtons() {
-  const RX = /mask ?editor|edit or mask|open in mask/i;
+  const RX = /mask ?editor|edit or mask|open in mask|fastmask/i;
   const check = (el) => {
+    if (el.getAttribute && el.getAttribute("data-fastmask-open") === "1") return; // never hide our own open button
     const t = (el.getAttribute?.("aria-label") || "") + " " + (el.getAttribute?.("title") || "");
-    if (RX.test(t)) el.style.setProperty("display", "none", "important");
+    const txt = (el.textContent || "").trim().toLowerCase();
+    if (RX.test(t) || txt.indexOf("fastmask") !== -1 || txt.indexOf("edit mask") !== -1) {
+      el.style.setProperty("display", "none", "important");
+    }
   };
   const scan = (root) => {
     if (root.nodeType !== 1) return;
@@ -1192,11 +1260,21 @@ app.registerExtension({
       return r;
     };
 
+    // re-clean stale widgets (e.g. the old oval FastMask button) after the node
+    // is (re)configured from a saved graph - the upload/preview widgets may be
+    // (re)added during configure, so we strip leftovers again here.
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function () {
+      const r = onConfigure ? onConfigure.apply(this, arguments) : undefined;
+      addOpenButton(this);
+      return r;
+    };
+
     const getExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
     nodeType.prototype.getExtraMenuOptions = function (_, options) {
       const r = getExtraMenuOptions ? getExtraMenuOptions.apply(this, arguments) : undefined;
       options.unshift({
-        content: "\uD83D\uDD8C Open in FastMask Editor",
+        content: "Edit Mask",
         callback: () => openEditor(this),
       });
       return r;
