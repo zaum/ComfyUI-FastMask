@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.3.7";
+const FM_VERSION = "1.3.8";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -943,6 +943,14 @@ function showBrushBadge() {
   brushBadgeTimer = setTimeout(() => ui.brushBadge.classList.add("fm-hidden"), 800);
 }
 
+// Immediately hide the centered brush badge (used when a toolbar slider is
+// released - the 800ms auto-hide of showBrushBadge would otherwise keep the
+// preview visible briefly after the interaction finished).
+function hideBrushBadge() {
+  if (brushBadgeTimer) { clearTimeout(brushBadgeTimer); brushBadgeTimer = 0; }
+  if (ui && ui.brushBadge) ui.brushBadge.classList.add("fm-hidden");
+}
+
 function toggleFill() { st.autoFill = !st.autoFill; updateToolbar(); }
 
 // After a toolbar slider interaction ends the whole canvas is repainted a few
@@ -988,8 +996,9 @@ function wireUI() {
   ui.brushSlider.addEventListener("input", (e) => { if (st) setBrush(+e.target.value); e.target.blur(); });
   ui.blurSlider.addEventListener("input", (e) => { if (st) { setBlur(+e.target.value); showBrushBadge(); } e.target.blur(); });
   // once the slider drag/step is committed, wipe any leftover tiling artifacts
-  ui.brushSlider.addEventListener("change", () => { refreshCanvas(); });
-  ui.blurSlider.addEventListener("change", () => { refreshCanvas(); });
+  // and drop the centered brush preview immediately
+  ui.brushSlider.addEventListener("change", () => { refreshCanvas(); hideBrushBadge(); });
+  ui.blurSlider.addEventListener("change", () => { refreshCanvas(); hideBrushBadge(); });
   ui.hatchBtn.addEventListener("click", () => ui.colorInput.click());
   ui.colorInput.addEventListener("input", (e) => {
     if (!st) return;
