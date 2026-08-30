@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.2.24";
+const FM_VERSION = "1.3.7";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -60,6 +60,7 @@ const CSS = `
 .fm-toggle-track.active .fm-toggle-knob{left:25px}
 /* live brush size badge in the middle of the canvas */
 .fm-brushbadge{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;border:2px solid rgba(255,255,255,.95);outline:1px solid rgba(0,0,0,.75);border-radius:50%;background:rgba(255,255,255,.08);pointer-events:none}
+.fm-brushbadge-inner{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:2px dashed rgba(255,255,255,.95);border-radius:50%;background:transparent;pointer-events:none}
 .fm-gap{width:12px}
 .fm-btn:hover{background:#3a3a3a;border-color:#666}
 .fm-btn.active{background:#3d6ea5;border-color:#5a8fc4;color:#fff}
@@ -73,8 +74,11 @@ const CSS = `
 .fm-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;border-radius:50%;background:#4a90d9;border:none;cursor:pointer}
 .fm-slider::-moz-range-track{height:3px;background:#444;border-radius:2px}
 .fm-slider::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:#4a90d9;border:none;cursor:pointer}
+/* blur slider - narrower than the brush slider (blue thumb, inherited) */
+.fm-slider.fm-blur-slider{width:100px}
 .fm-brushlabel{color:#aaa}
 .fm-brushval{margin-left:2px;min-width:42px;text-align:right;font-variant-numeric:tabular-nums;color:#8cf}
+.fm-blurval{margin-left:2px;min-width:36px;text-align:right;font-variant-numeric:tabular-nums;color:#da6}
 .fm-swatch{display:inline-block;width:18px;height:18px;border-radius:50%;border:1px solid #777;vertical-align:-4px}
 .fm-viewport{position:relative;flex:1;overflow:hidden;cursor:none;touch-action:none}
 .fm-viewport.fm-outside{cursor:default}
@@ -87,7 +91,7 @@ const CSS = `
 .fm-statusbar{display:flex;gap:28px;padding:5px 12px;background:#1b1b1b;border-top:1px solid #333;font-size:12px;color:#aaa;flex-wrap:wrap}
 .fm-statusbar b{color:#8cf;font-weight:600}
 .fm-statusbar kbd{display:inline-block;padding:1px 4px;margin:0;font:600 11px/1.4 system-ui,Segoe UI,sans-serif;color:#8cf;background:#1e2a3a;border:1px solid #3a4a5a;border-radius:3px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 1px 0 rgba(0,0,0,.4)}
-.fm-hint{margin-left:auto;display:flex;gap:22px;flex-wrap:wrap;align-items:center}
+.fm-hint{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .fm-hint span{white-space:nowrap}
 .fm-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16px;color:#aaa;background:#101010;z-index:2}
 .fm-hidden{display:none!important}
@@ -227,9 +231,20 @@ function buildUI() {
   const okBtn = btn("fmOk", "\u2714 OK", "Save and close (Enter)", "ok");
   gRight.append(cancelBtn, okBtn);
 
-  // middle block (centered): fit-to-page FIRST, then brush size, fill,
+  // middle block (centered): fit-to-page FIRST, then brush size, blur, fill,
   // hatch color, oval Paint/Erase toggle, and the B/W mask button LAST (rightmost)
-  gMid.append(fitBtn, brushLabel, brushSlider, fillToggle, hatchBtn, colorInput, modeToggle, showMask);
+  const blurLabel = document.createElement("span");
+  blurLabel.className = "fm-brushlabel";
+  blurLabel.textContent = "Blur";
+  const blurSlider = document.createElement("input");
+  blurSlider.type = "range";
+  blurSlider.id = "fmBlur";
+  blurSlider.className = "fm-slider fm-blur-slider";
+  blurSlider.min = "0";
+  blurSlider.max = "100";
+  blurSlider.value = "0";
+  blurSlider.dataset.tip = "Mask blur (drag horizontally with " + MOD + " held)";
+  gMid.append(fitBtn, brushLabel, brushSlider, blurLabel, blurSlider, fillToggle, hatchBtn, colorInput, modeToggle, showMask);
 
   topbar.append(gLeft, spL, gMid, spR, gRight);
 
@@ -245,33 +260,40 @@ function buildUI() {
   // live brush size badge (center of the canvas, shown while changing)
   const brushBadge = document.createElement("div");
   brushBadge.className = "fm-brushbadge fm-hidden";
+  // inner dashed circle visualizes the current mask blur amount
+  const brushBadgeInner = document.createElement("div");
+  brushBadgeInner.className = "fm-brushbadge-inner";
+  brushBadge.appendChild(brushBadgeInner);
   viewport.append(loading, wrap, brushBadge);
 
   const statusbar = document.createElement("div");
   statusbar.className = "fm-statusbar";
   statusbar.innerHTML =
     '<span>Brush: <b id="fmStBrush"></b></span>' +
+    '<span>Blur: <b id="fmStBlur"></b></span>' +
     '<span>Zoom: <b id="fmStZoom"></b></span>' +
     '<span>Image: <b id="fmStSize"></b></span>' +
     '<span class="fm-hint">' +
-       '<kbd>' + MOD + '</kbd>+<kbd>left-drag</kbd>: brush size   ' +
-       '<kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>: brush   ' +
-       '<kbd>wheel</kbd>: zoom   ' +
-       '<kbd>Space</kbd> / <kbd>middle button</kbd>: pan   ' +
-       '<kbd>right button</kbd>: erase   ' +
-       '<kbd>double right button</kbd>: clear all   ' +
-       '<kbd>X</kbd>: mode   ' +
+       '<kbd>' + MOD + '</kbd>+<kbd>up/down-drag</kbd>: brush size ' +
+       '<kbd>' + MOD + '</kbd>+<kbd>left/right-drag</kbd>: blur ' +
+       '<kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>: brush ' +
+       '<kbd>wheel</kbd>: zoom ' +
+       '<kbd>Space</kbd> / <kbd>middle button</kbd>: pan ' +
+       '<kbd>right button</kbd>: erase ' +
+       '<kbd>double right button</kbd>: clear all ' +
+       '<kbd>X</kbd>: mode ' +
        '<kbd>' + MOD + '</kbd>+<kbd>Z</kbd> / <kbd>' + MOD + '</kbd>+<kbd>Y</kbd>: undo/redo</span>';
 
   overlay.append(topbar, viewport, statusbar);
   document.body.appendChild(overlay);
 
   ui = {
-    overlay, topbar, viewport, wrap, canvas, loading, brushBadge,
-    modeBtn, modeToggle, paintLabel, eraseLabel, clearAll, undoBtn, redoBtn, brushSlider,
+    overlay, topbar, viewport, wrap, canvas, loading, brushBadge, brushBadgeInner,
+    modeBtn, modeToggle, paintLabel, eraseLabel, clearAll, undoBtn, redoBtn, brushSlider, blurSlider,
     hatchBtn, swatch, colorInput, fillToggle, showMask,
     fitBtn, cancelBtn, okBtn,
     stBrush: statusbar.querySelector("#fmStBrush"),
+    stBlur: statusbar.querySelector("#fmStBlur"),
     stZoom: statusbar.querySelector("#fmStZoom"),
     stSize: statusbar.querySelector("#fmStSize"),
   };
@@ -345,6 +367,7 @@ async function openEditor(node) {
     view: { scale: 1, x: 0, y: 0 },
     fitScale: 1,
     brushFull: Math.round(Math.min(fullW, fullH) * 0.06),
+    blurPct: 0,             // 0..100 mask blur, 0 = sharp
     mode: "paint",          // 'paint' | 'erase'
     autoFill: true,
     hatchColor: "#ff3fd8",
@@ -369,6 +392,7 @@ async function openEditor(node) {
   const maxBrush = Math.min(fullW, fullH);
   ui.brushSlider.max = String(maxBrush);
   ui.brushSlider.value = String(st.brushFull);
+  ui.blurSlider.value = "0";
   ui.colorInput.value = st.hatchColor;
   ui.swatch.style.background = st.hatchColor;
   ui.fillToggle.classList.toggle("active", st.autoFill);
@@ -381,10 +405,14 @@ async function openEditor(node) {
     try {
       const seg = String(mw.value).split("/");
       const mf = seg.pop();
+      // cache-bust: the mask file is overwritten in-place on every OK, so the
+      // browser would otherwise serve the stale /view result from cache and the
+      // editor would restore the OLD mask instead of the latest one.
       const mimg = await loadImage(api.apiURL("/view?" + new URLSearchParams({
         filename: mf,
         subfolder: seg.join("/"),
         type: "input",
+        _t: Date.now(),
       })));
       if (!st) return; // editor was closed meanwhile
       mctx.clearRect(0, 0, pw, ph);
@@ -550,7 +578,17 @@ function renderRect(r) {
   t.fillStyle = bw ? "#ffffff" : st.hatchPattern;
   t.fillRect(r.x, r.y, r.w, r.h);
   t.globalCompositeOperation = "destination-in";
-  t.drawImage(st.maskCanvas, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
+  // real-time mask blur: sample the mask with a margin around the dirty rect
+  // so the Gaussian kernel near the rect edges sees the correct pixels
+  const bp = st.blurPct > 0 ? blurRadiusPx() : 0;
+  const sx = bp ? Math.max(0, Math.floor(r.x - bp)) : r.x;
+  const sy = bp ? Math.max(0, Math.floor(r.y - bp)) : r.y;
+  const sxx = sx, syy = sy;
+  const sww = bp ? Math.min(st.pw, Math.ceil(r.x + r.w + bp)) - sx : r.w;
+  const shh = bp ? Math.min(st.ph, Math.ceil(r.y + r.h + bp)) - sy : r.h;
+  if (bp > 0) t.filter = "blur(" + bp + "px)";
+  t.drawImage(st.maskCanvas, sx, sy, sww, shh, sxx, syy, sww, shh);
+  t.filter = "none";
   t.restore();
   v.drawImage(st.tintCanvas, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
   v.restore();
@@ -562,8 +600,9 @@ function brushRadiusCanvas() {
 
 function cursorRect(c) {
   // Integer coordinates: fractional clip rects caused faint square seams
-  // along the redrawn area edges (very visible in B/W mode).
-  const rad = brushRadiusCanvas() + 2;
+  // along the redrawn area edges (very visible in B/W mode). Extended with the
+  // blur halo so the soft edge also refreshes while the cursor passes by.
+  const rad = brushRadiusCanvas() + 2 + (st.blurPct > 0 ? blurRadiusPx() : 0);
   const x = Math.max(0, Math.floor(c.x - rad));
   const y = Math.max(0, Math.floor(c.y - rad));
   const w = Math.min(st.pw - x, Math.ceil(rad * 2) + 2);
@@ -574,7 +613,8 @@ function cursorRect(c) {
 // Thin (screen-space ~1px) brush outline + center crosshair. Both are drawn in
 // the SAME canvas frame, so the crosshair can never lag behind the circle.
 function drawCursor() {
-  // Circle outline only - no crosshair in the middle.
+  // Circle outline + (when blur > 0) an inner concentric dashed circle whose
+  // radius grows with the blur amount. 0% blur -> only the outer circle.
   const v = st.vctx, c = st.cursor;
   const rad = brushRadiusCanvas();
   const lw = 1 / st.view.scale;
@@ -584,6 +624,16 @@ function drawCursor() {
   v.shadowColor = "rgba(0,0,0,.9)";
   v.shadowBlur = 2 / st.view.scale;
   v.beginPath(); v.arc(c.x, c.y, rad, 0, Math.PI * 2); v.stroke();
+  if (st.blurPct > 0) {
+    const irad = rad * (st.blurPct / 100);
+    if (irad > lw * 2) {
+      const dash = 4 / st.view.scale;
+      v.strokeStyle = "rgba(255,255,255,.7)";
+      v.setLineDash([dash, dash]);
+      v.beginPath(); v.arc(c.x, c.y, irad, 0, Math.PI * 2); v.stroke();
+      v.setLineDash([]);
+    }
+  }
   v.restore();
 }
 
@@ -630,7 +680,9 @@ function lineRadiusCanvas() {
 }
 
 function segBBox(x0, y0, x1, y1) {
-  const rad = lineRadiusCanvas() + 5;
+  // the blur halo extends beyond the hard brush edge, so the dirty rects and
+  // the undo tiles must cover it too or the soft edge won't refresh in place
+  const rad = lineRadiusCanvas() + 5 + (st.blurPct > 0 ? blurRadiusPx() : 0);
   const x = Math.min(x0, x1) - rad, y = Math.min(y0, y1) - rad;
   return { x, y, w: Math.abs(x0 - x1) + rad * 2, h: Math.abs(y0 - y1) + rad * 2 };
 }
@@ -838,9 +890,39 @@ function setBrush(sizeFull, fromKeyboard) {
   updateToolbar();
 }
 
+// Mask blur (0..100 percent). blurPx = the Gaussian radius used on the
+// preview canvas for the real-time B/W preview, based on the image size.
+function blurRadiusPx() {
+  return (st.blurPct / 100) * (Math.min(st.pw, st.ph) / 8);
+}
+
+// Coalesce full repaints while the blur is being dragged: at most one per
+// animation frame, so the mask blurs in real time without extra cost.
+function queueBlurRender() {
+  if (!st || st._blurRender) return;
+  st._blurRender = true;
+  requestAnimationFrame(() => {
+    if (!st) return;
+    st._blurRender = false;
+    renderAll();
+  });
+}
+
+function setBlur(pct, fromSizing) {
+  const v = clamp(Math.round(pct), 0, 100);
+  if (v === st.blurPct) { ui.blurSlider.value = String(v); return; }
+  st.blurPct = v;
+  ui.blurSlider.value = String(v);
+  ui.stBlur.textContent = v + "%";
+  // the whole mask display changes whenever blur changes -> repaint everything
+  queueBlurRender();
+  st.cursorDirty = true;
+}
+
 // Live brush preview in the middle of the canvas: an actual circle with the
-// current brush diameter (screen pixels) instead of a number; auto-hides
-// shortly after the size stops changing.
+// current brush diameter (screen pixels) instead of a number; the inner dashed
+// circle grows/shrinks with the mask blur amount. Auto-hides shortly after the
+// value stops changing.
 let brushBadgeTimer = 0;
 let lastRightClickMs = 0;
 function showBrushBadge() {
@@ -848,12 +930,31 @@ function showBrushBadge() {
   const d = Math.max(12, Math.round(st.brushFull * st.previewScale * st.view.scale));
   ui.brushBadge.style.width = d + "px";
   ui.brushBadge.style.height = d + "px";
+  if (st.blurPct > 0) {
+    const innerD = Math.max(6, Math.round(d * st.blurPct / 100));
+    ui.brushBadgeInner.style.width = innerD + "px";
+    ui.brushBadgeInner.style.height = innerD + "px";
+    ui.brushBadgeInner.style.display = "block";
+  } else {
+    ui.brushBadgeInner.style.display = "none";
+  }
   ui.brushBadge.classList.remove("fm-hidden");
   clearTimeout(brushBadgeTimer);
   brushBadgeTimer = setTimeout(() => ui.brushBadge.classList.add("fm-hidden"), 800);
 }
 
 function toggleFill() { st.autoFill = !st.autoFill; updateToolbar(); }
+
+// After a toolbar slider interaction ends the whole canvas is repainted a few
+// times (immediately + next frame + shortly after). Dirty-rect / GPU tiling
+// can leave thin stale seams that otherwise only disappear when the cursor
+// happens to repaint the tile - the same pattern as the resize-drag cleanup.
+function refreshCanvas() {
+  if (!st) return;
+  renderAll();
+  requestAnimationFrame(() => { if (st) renderAll(); });
+  setTimeout(() => { if (st) renderAll(); }, 120);
+}
 
 function toggleShowMask() {
   st.maskLocked = !st.maskLocked;
@@ -870,6 +971,7 @@ function updateToolbar() {
   ui.fillToggle.classList.toggle("active", st.autoFill);
   ui.showMask.classList.toggle("active", st.maskLocked);
   ui.stBrush.textContent = st.brushFull + " px";
+  ui.stBlur.textContent = st.blurPct + "%";
   ui.stZoom.textContent = Math.round(st.view.scale * 100) + "%";
 }
 
@@ -884,6 +986,10 @@ function wireUI() {
   ui.undoBtn.addEventListener("click", () => undo());
   ui.redoBtn.addEventListener("click", () => redo());
   ui.brushSlider.addEventListener("input", (e) => { if (st) setBrush(+e.target.value); e.target.blur(); });
+  ui.blurSlider.addEventListener("input", (e) => { if (st) { setBlur(+e.target.value); showBrushBadge(); } e.target.blur(); });
+  // once the slider drag/step is committed, wipe any leftover tiling artifacts
+  ui.brushSlider.addEventListener("change", () => { refreshCanvas(); });
+  ui.blurSlider.addEventListener("change", () => { refreshCanvas(); });
   ui.hatchBtn.addEventListener("click", () => ui.colorInput.click());
   ui.colorInput.addEventListener("input", (e) => {
     if (!st) return;
@@ -923,8 +1029,10 @@ function wireUI() {
       const p = toCanvas(e);
       // anchor the brush center where the resize starts; it stays fixed while
       // the diameter changes (the circle grows/shrinks from its center).
+      // Vertical drag changes the brush size, horizontal drag changes the blur,
+      // with a deadzone / axis lock so a slightly tilted drag only affects ONE.
       st.cursor.x = p.x; st.cursor.y = p.y; st.cursor.inside = true; st.cursorDirty = true;
-      st.sizing = { y: e.clientY, size: st.brushFull };
+      st.sizing = { x: e.clientX, y: e.clientY, size: st.brushFull, blur: st.blurPct, axis: null };
       st.suppressFollow = true; // don't let the brush follow the mouse until next click
       return;
     }
@@ -951,10 +1059,30 @@ function wireUI() {
   v.addEventListener("pointermove", (e) => {
     if (!st) return;
     if (st.sizing) {
-      // resizing anchored at the brush center: the cursor/center does NOT
-      // follow the mouse (neither horizontally nor vertically) - only the
-      // diameter changes. No center brush-size badge in this mode.
-      setBrush(st.sizing.size + (st.sizing.y - e.clientY) * Math.max(1, st.fullH / 400), true);
+      const s = st.sizing;
+      const dx = e.clientX - s.x, dy = s.y - e.clientY; // dy > 0 = upward
+      const ax = Math.abs(dx), ay = Math.abs(dy);
+      const DEADZONE = 20, SWITCH = 90; // px
+      if (!s.axis) {
+        // ignore small initial jitter, then lock to the dominant direction
+        if (Math.max(ax, ay) < DEADZONE) return;
+        s.axis = ay >= ax ? "size" : "blur";
+      } else if (s.axis === "size" && ax > ay + SWITCH) {
+        // clearly switched to horizontal: re-anchor and continue on the blur axis
+        s.axis = "blur";
+        s.blur = st.blurPct; s.x = e.clientX; s.y = e.clientY; s.size = st.brushFull;
+      } else if (s.axis === "blur" && ay > ax + SWITCH) {
+        // clearly switched to vertical: re-anchor and continue on the size axis
+        s.axis = "size";
+        s.size = st.brushFull; s.x = e.clientX; s.y = e.clientY; s.blur = st.blurPct;
+      }
+      if (s.axis === "size") {
+        // horizontal jitter is ignored -> only the vertical component matters
+        setBrush(s.size + (s.y - e.clientY) * Math.max(1, st.fullH / 400), true);
+      } else if (s.axis === "blur") {
+        // vertical jitter is ignored -> only the horizontal component matters
+        setBlur(s.blur + (e.clientX - s.x) * Math.max(1, st.fullH / 1600), true);
+      }
       // throttle a full repaint while sizing — dirty-rect-only updates can leave
       // thin GPU seams that otherwise only disappear when the brush repaints.
       if (!st._sizingRefresh) {
@@ -1128,7 +1256,11 @@ async function buildFullResMask() {
   const fctx = full.getContext("2d", { willReadFrequently: true });
   fctx.imageSmoothingEnabled = true;
   fctx.imageSmoothingQuality = "high";
+  // the blur set in the editor is applied to the exported full-res mask too
+  const blurFull = st.blurPct > 0 ? (st.blurPct / 100) * (Math.min(st.fullW, st.fullH) / 8) : 0;
+  if (blurFull > 0) fctx.filter = "blur(" + blurFull + "px)";
   fctx.drawImage(st.maskCanvas, 0, 0, st.fullW, st.fullH);
+  fctx.filter = "none";
   const data = fctx.getImageData(0, 0, st.fullW, st.fullH);
   const d = data.data;
   for (let i = 0; i < d.length; i += 4) {
@@ -1162,7 +1294,15 @@ async function saveAndClose() {
     const path = sub ? sub + "/" + fname : fname;
     const w = (st.node.widgets || []).find((w) => w.name === "mask_path");
     if (w) {
+      // keep BOTH the widget value AND the serialized widgets_values in sync:
+      // only setting `.value` silently drops the mask path on graph save/reload
+      // and the editor then restores the original (empty) mask.
       w.value = path;
+      const idx = (st.node.widgets || []).indexOf(w);
+      if (idx >= 0 && st.node.widgets_values) st.node.widgets_values[idx] = path;
+      // ComfyUI's high-level setter also marks the graph dirty / triggers the
+      // widget callback so the node picks the new mask path up on next run.
+      try { if (typeof st.node.setWidgetValue === "function") st.node.setWidgetValue("mask_path", path); } catch (e) {}
       if (w.callback) w.callback(path);
     }
     app.graph.setDirtyCanvas(true, false);
@@ -1280,6 +1420,8 @@ function alignPreviewTop(node) {
     const wOpen = node.widgets && node.widgets.find((x) => x.name === "fm_open");
     const nodeEl = wOpen && wOpen.element ? (wOpen.element.closest("[data-node-id]") || document.querySelector(`[data-node-id="${node.id}"]`)) : document.querySelector(`[data-node-id="${node.id}"]`);
     if (!nodeEl) return;
+    // (no display/flex changes here - forcing display:flex on ComfyUI's node
+    // containers collapses the preview img inside it and hides the image)
     const preview = findNodePreview(nodeEl);
     if (!preview) {
       // preview not yet rendered — the gap is the collapsed button's slot (34px)
@@ -1293,17 +1435,24 @@ function alignPreviewTop(node) {
       pbox.style.setProperty("margin-top", "6px", "important");
       pbox.style.setProperty("padding-top", "0", "important");
       pbox.style.setProperty("top", "auto", "important");
+      // flex-only: align the preview to the top if any container is a flex column
+      pbox.style.setProperty("align-self", "flex-start", "important");
+    }
+    // top-align every widget container WITHOUT touching display/flex of children.
+    // These properties are no-ops on static blocks and only take effect in the
+    // (already-flex) node containers, where they stop the vertical centering
+    // that leaves a large empty gap at the top when the node is resized bigger.
+    const containers = nodeEl.querySelectorAll(".comfy-node-content, .comfy-node-widgets, .comfy-widgets, .node-content, .node-widgets");
+    for (const c of containers) {
+      c.style.setProperty("justify-content", "flex-start", "important");
+      c.style.setProperty("align-content", "flex-start", "important");
     }
     // also collapse any empty widget row that LiteGraph left for the now-absolute button
     try {
       const widgetsEl = nodeEl.querySelector(".comfy-widgets, .node-widgets");
       if (widgetsEl) widgetsEl.style.setProperty("gap", "0", "important");
     } catch(e){}
-    // LiteGraph can vertically center the preview when the node is tall;
-    // force the node's content to start at the top
-    const inner = nodeEl.querySelector(".comfy-node-content, .node-content") || nodeEl;
-    if (inner) inner.style.setProperty("justify-content", "flex-start", "important");
-  } catch (e) {}
+  } catch (e) { /* no-op */ }
 }
 
 function positionBottom(node) {
@@ -1316,36 +1465,26 @@ function positionBottom(node) {
       if (wOpen) {
         try { wOpen.computeSize = () => [-1, 0]; if (wOpen.element && wOpen.element.parentElement) wOpen.element.parentElement.style.height = "0px"; } catch (e) {}
       }
-      const minH = 340;
+      const minH = 360;
       if (node.size && node.size[1] < minH) {
         node.size[1] = minH;
         if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
       }
-      // placeholder size is the collapsed button slot (34px) + LiteGraph's node
-      // padding; we want a small gap above the preview (handled in
-      // alignPreviewTop) and a clear gap between the 4096×4096 size line and
-      // the Edit Mask button — expand the node just enough to avoid overlap
-      const wantPad = 36;
+      // node padding = 34px button + 10px bottom inset + a clear ~18px gap
+      // above it, so the image-size line under the preview never touches the
+      // Edit Mask button.
+      const wantPad = 62;
       if (!node._fmBottomPad) {
         node._fmBottomPad = wantPad;
         node.size[1] = (node.size[1] || 300) + wantPad;
         if (node.onResize) try { node.onResize(node.size); } catch (e) {}
         if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
       } else if (node._fmBottomPad !== wantPad) {
-        const delta = wantPad - (typeof node._fmBottomPad === "number" ? node._fmBottomPad : (node._fmBottomPad === true ? 62 : 44));
+        const delta = wantPad - (typeof node._fmBottomPad === "number" ? node._fmBottomPad : 44);
         if (delta !== 0) {
           node.size[1] = (node.size[1] || 300) + delta;
           node._fmBottomPad = wantPad;
           if (node.onResize) try { node.onResize(node.size); } catch (e) {}
-          if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
-        }
-      }
-      // if we previously added a larger pad, shrink the gap above the image
-      if (node.size && node.size[1] > 520) {
-        // cap - the earlier 480+62 made the image sit in the middle with a large top gap
-        const extra = node.size[1] - 520;
-        if (extra > 0) {
-          node.size[1] -= Math.min(extra, 40);
           if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
         }
       }
@@ -1355,7 +1494,7 @@ function positionBottom(node) {
       if (box) {
         box.style.setProperty("height", "34px", "important");
         box.style.setProperty("top", "auto", "important");
-        box.style.setProperty("bottom", "8px", "important");
+        box.style.setProperty("bottom", "10px", "important");
         box.style.setProperty("left", "8px", "important");
         box.style.setProperty("right", "8px", "important");
         box.style.setProperty("width", "calc(100% - 16px)", "important");
@@ -1423,20 +1562,28 @@ function enableNodeHoverBW(node) {
       const seg = String(mp.value).split("/");
       const fname = seg.pop();
       const sub = seg.join("/");
-      const url = api.apiURL("/view?" + new URLSearchParams({ filename: fname, subfolder: sub, type: "input" }));
+      // cache-bust: the mask file is overwritten in place on every OK, so the
+      // browser would otherwise serve the stale /view URL from cache (old,
+      // un-blurred mask). A fresh timestamp forces a reload.
+      const url = api.apiURL("/view?" + new URLSearchParams({ filename: fname, subfolder: sub, type: "input", _t: Date.now() }));
       console.log("[FastMask] hover load mask", url);
       const ov = document.createElement("div");
       ov.className = "fm-node-bw";
-      // exactly cover the preview image - use the preview's rendered rect, not the
-      // box (box includes the 4096x4096 size line and is taller)
+      // exactly cover the preview element (not the box - the box also holds the
+      // image-size line and is taller). The mask <img> inside uses the SAME
+      // object-fit as the color preview, so the browser renders the B/W mask at
+      // exactly the same size/position as the color image (contain matches the
+      // letterboxed image area, fill matches a stretched image, both identical
+      // to what the color preview does - no manual scaling that can drift).
       const rect = preview.getBoundingClientRect();
       const boxRect = box.getBoundingClientRect();
       const left = rect.left - boxRect.left;
       const top = rect.top - boxRect.top;
+      const fit = preview.tagName === "IMG" ? (getComputedStyle(preview).objectFit || "fill") : "fill";
       ov.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${rect.width}px;height:${rect.height}px;background:#000;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:10;overflow:hidden`;
       const im = document.createElement("img");
       im.src = url;
-      im.style.cssText = "width:100%;height:100%;display:block;object-fit:fill;filter:grayscale(1) contrast(1.2)";
+      im.style.cssText = `width:100%;height:100%;display:block;object-fit:${fit};filter:grayscale(1) contrast(1.2)`;
       im.onload = () => console.log("[FastMask] mask img loaded", im.naturalWidth);
       im.onerror = () => console.log("[FastMask] mask load error", url);
       ov.appendChild(im);

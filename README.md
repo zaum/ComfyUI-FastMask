@@ -29,6 +29,7 @@ A node egyben **képbetöltő is** (mint a gyári LoadImage):
 | Festés (kerek brush) | **Bal egérgomb** nyomva tartva |
 | Törlés | **Jobb egérgomb** nyomva tartva |
 | Brush méret | **Ctrl + bal gomb húzás** (függőlegesen), **Ctrl + görgő**, `[` / `]`, vagy a csúszka |
+| Maszk blur | **Ctrl + bal gomb húzás** (vízszintesen) vagy a **Blur** csúszka – a maszk éle real time elmosódik a fekete-fehér nézetben; a csúszka a B/W előnézetben is látszik. Alapértelmezett: 0% (nincs blur) |
 | Maszkolás/Törlés mód váltás | `X` vagy a gombok |
 | Zoom | **Egérgörgő** (a kurzorhoz igazodva) |
 | Pan | **Középső gomb húzás** vagy **Space** nyomva tartva |
@@ -53,6 +54,7 @@ A gyári editor minden egérmozdulatnál nagyobb területet renderel újra, telj
 - **Zoom/pan = tiszta CSS transform** – nulla költségű navigáció, akár 32× nagyításnál is.
 - **Tile-alapú undo/redo** – nem teljes képeket másol, hanem csak a vonás által ténylegesen érintett 256×256-os csempéket (lazy snapshot, max. 40 lépés).
 - **Zárt alakzat kitöltése** – a vonás végpontja alapján detektált zárt körvonalat egyetlen `evenodd` scanline fill-lel tölti ki temp canvasen keresztül.
+- **Real-time maszk blur** – a **Blur** csúszka (0–100%) a maszk széleit Gaussian-blurral lágyítja, ami a szerkesztés közben, a fekete-fehér nézetben élőben követi a változtatást, és a full-res exportnál is megmarad. Az egéren egy szaggatott belső kör mutatja a blur mértékét (0%-nál csak a külső kör látszik). A **Ctrl + bal gomb húzás** függőlegesen a brush méretet, vízszintesen a blurt változtatja.
 
 ## SAM szegmentáció – tervezett kiterjesztés (nem implementált)
 
