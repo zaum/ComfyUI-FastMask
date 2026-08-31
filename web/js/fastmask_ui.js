@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.6.9";
+const FM_VERSION = "1.7.4";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -89,6 +89,9 @@ const CSS = `
 /* screen-resolution overlay for the brush cursor: stays crisp even when the
    preview canvas itself is low-res and heavily upscaled by the zoom */
 .fm-cursorlayer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:2}
+/* screen-resolution overlay for the hatch pattern: like the cursor ring, it
+   stays crisp on small images where the preview canvas is heavily upscaled */
+.fm-hatchlayer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:1}
 .fm-wrap canvas{display:block}
 .fm-wrap canvas.fm-bw{outline:1px solid rgba(255,255,255,.28);outline-offset:-1px}
 .fm-statusbar{display:flex;gap:28px;padding:5px 12px;background:#1b1b1b;border-top:1px solid #333;font-size:12px;color:#aaa;flex-wrap:wrap}
@@ -231,7 +234,7 @@ function buildUI() {
   eraseLabel.textContent = "Erase";
   modeToggle.append(paintLabel, modeBtn, eraseLabel);
   const cancelBtn = btn("fmCancel", "Cancel", "Cancel (Esc)");
-  const okBtn = btn("fmOk", "\u2714 OK", "Save and close (Enter)", "ok");
+  const okBtn = btn("fmOk", "OK", "Save and close (Enter)", "ok");
   gRight.append(cancelBtn, okBtn);
 
   // middle block (centered): fit-to-page FIRST, then brush size, blur, fill,
@@ -270,7 +273,9 @@ function buildUI() {
   // screen-resolution brush cursor overlay (crisp at any zoom / image size)
   const cursorLayer = document.createElement("canvas");
   cursorLayer.className = "fm-cursorlayer";
-  viewport.append(loading, wrap, cursorLayer, brushBadge);
+  const hatchLayer = document.createElement("canvas");
+  hatchLayer.className = "fm-hatchlayer";
+  viewport.append(loading, wrap, hatchLayer, cursorLayer, brushBadge);
 
   const statusbar = document.createElement("div");
   statusbar.className = "fm-statusbar";
@@ -280,15 +285,15 @@ function buildUI() {
     '<span>Zoom: <b id="fmStZoom"></b></span>' +
     '<span>Image: <b id="fmStSize"></b></span>' +
     '<span class="fm-hint">' +
-       '<kbd>' + MOD + '</kbd>+<kbd>up/down-drag</kbd>:brush size' +
-       '<kbd>' + MOD + '</kbd>+<kbd>left/right-drag</kbd>:blur' +
-       '<kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>:brush' +
-       '<kbd>wheel</kbd>:zoom' +
-       '<kbd>Space</kbd>/<kbd>middle button</kbd>:pan' +
-       '<kbd>right button</kbd>:erase' +
-       '<kbd>double right button</kbd>:clear all' +
-       '<kbd>X</kbd>:mode' +
-       '<kbd>' + MOD + '</kbd>+<kbd>Z</kbd>/<kbd>' + MOD + '</kbd>+<kbd>Y</kbd>:undo/redo</span>';
+       '<kbd>' + MOD + '</kbd>+<kbd>up/down-drag</kbd>: brush size' +
+       '<kbd>' + MOD + '</kbd>+<kbd>left/right-drag</kbd>: blur' +
+       '<kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>: brush' +
+       '<kbd>wheel</kbd>: zoom' +
+       '<kbd>Space</kbd>/<kbd>middle button</kbd>: pan' +
+       '<kbd>right button</kbd>: erase' +
+       '<kbd>double right button</kbd>: clear all' +
+       '<kbd>X</kbd>: mode' +
+       '<kbd>' + MOD + '</kbd>+<kbd>Z</kbd>/<kbd>' + MOD + '</kbd>+<kbd>Y</kbd>: undo/redo</span>';
 
   overlay.append(topbar, viewport, statusbar);
   document.body.appendChild(overlay);
@@ -311,7 +316,7 @@ function buildUI() {
     overlay, topbar, viewport, wrap, canvas, loading, brushBadge, brushBadgeInner,
     modeBtn, modeToggle, paintLabel, eraseLabel, clearAll, undoBtn, redoBtn, brushSlider, blurSlider,
     hatchBtn, swatch, colorInput, fillToggle, showMask,
-    fitBtn, cancelBtn, okBtn, cursorLayer,
+    fitBtn, cancelBtn, okBtn, cursorLayer, hatchLayer,
     stBrush: statusbar.querySelector("#fmStBrush"),
     stBlur: statusbar.querySelector("#fmStBlur"),
     stZoom: statusbar.querySelector("#fmStZoom"),
@@ -401,6 +406,10 @@ async function openEditor(node) {
     node, fullW, fullH, pw, ph, previewScale: pw / fullW,
     baseCanvas, maskCanvas, mctx, tintCanvas, tctx, tempCanvas, tempCtx, vctx,
     cursorCtx: ui.cursorLayer.getContext("2d"),
+    hatchCtx: ui.hatchLayer.getContext("2d"),
+    hatchDirty: true,
+    // screen-space blurred mask buffer for the hatch overlay (perf)
+    msC: null, msCtx: null, msScale: 0, msBlur: -1, msW: 0, msH: 0, msRects: null,
     img,
     view: { scale: 1, x: 0, y: 0 },
     fitScale: 1,
@@ -560,6 +569,7 @@ function zoomAt(clientX, clientY, factor) {
   st.view.y = my - (my - st.view.y) * (s1 / s0);
   st.view.scale = s1;
   st.cursorDirty = true;
+  st.hatchDirty = true;
   applyTransform();
 }
 
@@ -576,17 +586,17 @@ function bwMode() { return st.maskLocked || st.bwHover; }
 
 function makeHatch() {
   const c = document.createElement("canvas");
-  c.width = 12; c.height = 12;
+  c.width = 18; c.height = 18; // 18px tile -> sparser hatch spacing
   const g = c.getContext("2d");
   g.strokeStyle = st.hatchColor;
   g.lineWidth = 2;
   g.lineCap = "square";
   g.beginPath();
-  g.moveTo(-3, 15); g.lineTo(15, -3);
-  g.moveTo(-3, 3);  g.lineTo(3, -3);
-  g.moveTo(9, 15);  g.lineTo(15, 9);
+  g.moveTo(-4, 22); g.lineTo(22, -4);
+  g.moveTo(-4, 4);  g.lineTo(4, -4);
+  g.moveTo(14, 22); g.lineTo(22, 14);
   g.stroke();
-  st.hatchPattern = st.tctx.createPattern(c, "repeat");
+  st.hatchPattern = st.hatchCtx.createPattern(c, "repeat");
 }
 
 function addDirty(x, y, w, h) {
@@ -599,7 +609,10 @@ function addDirty(x, y, w, h) {
 
 function renderAll() { st.dirty.push({ x: 0, y: 0, w: st.pw, h: st.ph }); }
 
-// Redraw one dirty rect: base image + hatch/white drawing limited to the mask.
+// Redraw one dirty rect: base image + (in B/W mode) white drawing limited to
+// the mask. In paint mode the hatch lives on its own screen-resolution
+// overlay (drawHatchLayer), so the preview canvas only carries the image -
+// this also keeps the hatch crisp on small, heavily upscaled images.
 function renderRect(r) {
   const v = st.vctx, t = st.tctx;
   const bw = bwMode();
@@ -608,29 +621,29 @@ function renderRect(r) {
   if (bw) {
     v.fillStyle = "#000";
     v.fillRect(r.x, r.y, r.w, r.h);
+    // tint the mask inside the rect only
+    t.save();
+    t.beginPath(); t.rect(r.x, r.y, r.w, r.h); t.clip();
+    t.clearRect(r.x, r.y, r.w, r.h);
+    t.fillStyle = "#ffffff";
+    t.fillRect(r.x, r.y, r.w, r.h);
+    t.globalCompositeOperation = "destination-in";
+    // real-time mask blur: sample the mask with a margin around the dirty rect
+    // so the Gaussian kernel near the rect edges sees the correct pixels
+    const bp = st.blurPct > 0 ? blurRadiusPx() : 0;
+    const sx = bp ? Math.max(0, Math.floor(r.x - bp)) : r.x;
+    const sy = bp ? Math.max(0, Math.floor(r.y - bp)) : r.y;
+    const sxx = sx, syy = sy;
+    const sww = bp ? Math.min(st.pw, Math.ceil(r.x + r.w + bp)) - sx : r.w;
+    const shh = bp ? Math.min(st.ph, Math.ceil(r.y + r.h + bp)) - sy : r.h;
+    if (bp > 0) t.filter = "blur(" + bp + "px)";
+    t.drawImage(st.maskCanvas, sx, sy, sww, shh, sxx, syy, sww, shh);
+    t.filter = "none";
+    t.restore();
+    v.drawImage(st.tintCanvas, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
   } else {
     v.drawImage(st.baseCanvas, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
   }
-  // tint the mask inside the rect only
-  t.save();
-  t.beginPath(); t.rect(r.x, r.y, r.w, r.h); t.clip();
-  t.clearRect(r.x, r.y, r.w, r.h);
-  t.fillStyle = bw ? "#ffffff" : st.hatchPattern;
-  t.fillRect(r.x, r.y, r.w, r.h);
-  t.globalCompositeOperation = "destination-in";
-  // real-time mask blur: sample the mask with a margin around the dirty rect
-  // so the Gaussian kernel near the rect edges sees the correct pixels
-  const bp = st.blurPct > 0 ? blurRadiusPx() : 0;
-  const sx = bp ? Math.max(0, Math.floor(r.x - bp)) : r.x;
-  const sy = bp ? Math.max(0, Math.floor(r.y - bp)) : r.y;
-  const sxx = sx, syy = sy;
-  const sww = bp ? Math.min(st.pw, Math.ceil(r.x + r.w + bp)) - sx : r.w;
-  const shh = bp ? Math.min(st.ph, Math.ceil(r.y + r.h + bp)) - sy : r.h;
-  if (bp > 0) t.filter = "blur(" + bp + "px)";
-  t.drawImage(st.maskCanvas, sx, sy, sww, shh, sxx, syy, sww, shh);
-  t.filter = "none";
-  t.restore();
-  v.drawImage(st.tintCanvas, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
   v.restore();
 }
 
@@ -701,17 +714,99 @@ function drawCursor() {
   g.restore();
 }
 
+// Hatch overlay: the vivid diagonal pattern drawn at SCREEN resolution,
+// masked by the (optionally blurred) mask. Like the cursor layer, this stays
+// crisp when the preview canvas is small and upscaled by the zoom transform.
+function sizeHatchLayer() {
+  const lay = ui.hatchLayer;
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const w = Math.max(1, Math.round(ui.viewport.clientWidth * dpr));
+  const h = Math.max(1, Math.round(ui.viewport.clientHeight * dpr));
+  if (lay.width !== w || lay.height !== h) { lay.width = w; lay.height = h; }
+}
+
+function drawHatchLayer() {
+  const g = st.hatchCtx;
+  if (!g) return;
+  sizeHatchLayer();
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, g.canvas.width, g.canvas.height);
+  if (bwMode()) { st.hatchDirty = false; return; } // B/W view paints its own white mask
+  const s = st.view.scale;
+  const vw = g.canvas.width, vh = g.canvas.height; // device px
+  const bp = st.blurPct > 0 ? blurRadiusPx() : 0;  // canvas px
+  // ---- keep a SCREEN-RES blurred copy of the mask (st.msC) ----
+  // Rebuilt fully on zoom / resize / blur-change; while painting only the
+  // dirty rects are re-blurred, so strokes never re-blur the whole screen.
+  if (!st.msC || st.msW !== vw || st.msH !== vh ||
+      Math.abs(st.msScale - s * dpr) > 1e-4 || Math.abs(st.msBlur - bp) > 0.5) {
+    if (!st.msC) { st.msC = document.createElement("canvas"); st.msCtx = st.msC.getContext("2d"); }
+    st.msC.width = vw; st.msC.height = vh;
+    st.msW = vw; st.msH = vh;
+    const m = st.msCtx;
+    m.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (bp > 0) m.filter = "blur(" + (bp * s).toFixed(2) + "px)";
+    m.drawImage(st.maskCanvas, st.view.x, st.view.y, st.pw * s, st.ph * s);
+    m.filter = "none";
+    st.msScale = s * dpr; st.msBlur = bp; st.msRects = null;
+  } else if (st.msRects && st.msRects.length) {
+    const m = st.msCtx;
+    m.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const m2 = Math.ceil(bp * s * 2) + 6; // screen-px margin for the blur halo
+    for (const r of st.msRects) {
+      const dx = st.view.x + r.x * s, dy = st.view.y + r.y * s;
+      const dw = r.w * s, dh = r.h * s;
+      const ex = Math.max(0, dx - m2), ey = Math.max(0, dy - m2);
+      const ex2 = Math.min(vw / dpr, dx + dw + m2), ey2 = Math.min(vh / dpr, dy + dh + m2);
+      if (ex2 <= ex || ey2 <= ey) continue;
+      // clear + redraw an expanded region: blur near the borders stays correct
+      m.clearRect(ex, ey, ex2 - ex, ey2 - ey);
+      const sx0 = Math.max(0, Math.floor((ex - st.view.x) / s));
+      const sy0 = Math.max(0, Math.floor((ey - st.view.y) / s));
+      const sx1 = Math.min(st.pw, Math.ceil((ex2 - st.view.x) / s));
+      const sy1 = Math.min(st.ph, Math.ceil((ey2 - st.view.y) / s));
+      if (sx1 > sx0 && sy1 > sy0) {
+        if (bp > 0) m.filter = "blur(" + (bp * s).toFixed(2) + "px)";
+        m.drawImage(st.maskCanvas, sx0, sy0, sx1 - sx0, sy1 - sy0,
+                    st.view.x + sx0 * s, st.view.y + sy0 * s, (sx1 - sx0) * s, (sy1 - sy0) * s);
+        m.filter = "none";
+      }
+    }
+    st.msRects = null;
+  }
+  // ---- composite: mask buffer + hatch pattern (two cheap GPU ops) ----
+  g.drawImage(st.msC, 0, 0);
+  g.globalCompositeOperation = "source-in";
+  const pat = st.hatchPattern;
+  if (pat) {
+    // anchor the pattern to the image so panning does not make it swim
+    // (user space here is device px, hence the dpr factor)
+    try { pat.setTransform(new DOMMatrix([1, 0, 0, 1, st.view.x * dpr, st.view.y * dpr])); } catch (e) {}
+    g.fillStyle = pat;
+    g.fillRect(0, 0, vw, vh);
+  }
+  g.globalCompositeOperation = "source-over";
+  st.hatchDirty = false;
+}
+
 // Single rAF loop: dirty rects + cursor, otherwise nothing to do.
 function frame() {
   if (!st) return;
   const bw = bwMode();
   // faint outline around the image frame in B/W mode (CSS outline, zero cost)
+  if (st._lastBw === undefined) st._lastBw = bw;
+  else if (bw !== st._lastBw) { st._lastBw = bw; st.hatchDirty = true; }
   ui.canvas.classList.toggle("fm-bw", bw);
   if (st.dirty.length) {
     let list = st.dirty;
     st.dirty = [];
     if (list.length > 64) list = [{ x: 0, y: 0, w: st.pw, h: st.ph }];
     for (const r of list) renderRect(r);
+    // the hatch overlay updates the same regions incrementally (no full-screen
+    // re-blur while painting - see drawHatchLayer)
+    st.msRects = list;
+    st.hatchDirty = true;
     st.cursorDirty = true;
   }
   if (st.cursorDirty) {
@@ -724,6 +819,7 @@ function frame() {
     st.prevCursor = null;
     st.cursorDirty = false;
   }
+  if (st.hatchDirty) drawHatchLayer();
   st.raf = requestAnimationFrame(frame);
 }
 
@@ -1315,20 +1411,22 @@ function onKey(e, down) {
 async function buildFullResMask() {
   const full = document.createElement("canvas");
   full.width = st.fullW; full.height = st.fullH;
-  const fctx = full.getContext("2d", { willReadFrequently: true });
+  const fctx = full.getContext("2d");
   fctx.imageSmoothingEnabled = true;
   fctx.imageSmoothingQuality = "high";
   // the blur set in the editor is applied to the exported full-res mask too
   const blurFull = st.blurPct > 0 ? (st.blurPct / 100) * (Math.min(st.fullW, st.fullH) / 8) : 0;
+  // GPU-composited white mask: fill white, then punch the (blurred) mask into
+  // the alpha channel. Same result as the old per-pixel ImageData loop, but
+  // fully GPU-accelerated - no 67MB getImageData/putImageData round-trip on
+  // large images, so the OK save is several times faster.
+  fctx.fillStyle = "#fff";
+  fctx.fillRect(0, 0, st.fullW, st.fullH);
+  fctx.globalCompositeOperation = "destination-in";
   if (blurFull > 0) fctx.filter = "blur(" + blurFull + "px)";
   fctx.drawImage(st.maskCanvas, 0, 0, st.fullW, st.fullH);
   fctx.filter = "none";
-  const data = fctx.getImageData(0, 0, st.fullW, st.fullH);
-  const d = data.data;
-  for (let i = 0; i < d.length; i += 4) {
-    d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; // white, alpha carries the mask
-  }
-  fctx.putImageData(data, 0, 0);
+  fctx.globalCompositeOperation = "source-over";
   return full;
 }
 
@@ -1411,7 +1509,7 @@ async function saveAndClose() {
   } finally {
     if (ui) {
       ui.okBtn.disabled = false;
-      ui.okBtn.textContent = "\u2714 OK";
+      ui.okBtn.textContent = "OK";
     }
   }
 }
