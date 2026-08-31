@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.3.8";
+const FM_VERSION = "1.6.4";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -53,8 +53,8 @@ const CSS = `
 .fm-mode-toggle{display:inline-flex;align-items:center;gap:10px;user-select:none}
 .fm-toggle-label{font-size:13px;color:#888;cursor:pointer;user-select:none;transition:color .15s}
 .fm-toggle-label.active{color:#fff;font-weight:600}
-.fm-toggle-track{position:relative;width:48px;height:26px;border-radius:13px;background:#2a2a2a;border:1px solid #444;cursor:pointer;transition:background .15s,border-color .15s;flex:none}
-.fm-toggle-track:hover{border-color:#666}
+.fm-toggle-track{position:relative;width:48px;height:26px;border-radius:13px;background:#3d6ea5;border:1px solid #5a8fc4;cursor:pointer;transition:background .15s,border-color .15s;flex:none}
+.fm-toggle-track:hover{border-color:#7aa8d8}
 .fm-toggle-track.active{background:#3d6ea5;border-color:#5a8fc4}
 .fm-toggle-knob{position:absolute;top:2px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:left .15s}
 .fm-toggle-track.active .fm-toggle-knob{left:25px}
@@ -91,7 +91,7 @@ const CSS = `
 .fm-statusbar{display:flex;gap:28px;padding:5px 12px;background:#1b1b1b;border-top:1px solid #333;font-size:12px;color:#aaa;flex-wrap:wrap}
 .fm-statusbar b{color:#8cf;font-weight:600}
 .fm-statusbar kbd{display:inline-block;padding:1px 4px;margin:0;font:600 11px/1.4 system-ui,Segoe UI,sans-serif;color:#8cf;background:#1e2a3a;border:1px solid #3a4a5a;border-radius:3px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 1px 0 rgba(0,0,0,.4)}
-.fm-hint{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.fm-hint{margin-left:auto;display:flex;gap:0;flex-wrap:wrap;align-items:center}
 .fm-hint span{white-space:nowrap}
 .fm-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16px;color:#aaa;background:#101010;z-index:2}
 .fm-hidden{display:none!important}
@@ -274,18 +274,22 @@ function buildUI() {
     '<span>Zoom: <b id="fmStZoom"></b></span>' +
     '<span>Image: <b id="fmStSize"></b></span>' +
     '<span class="fm-hint">' +
-       '<kbd>' + MOD + '</kbd>+<kbd>up/down-drag</kbd>: brush size ' +
-       '<kbd>' + MOD + '</kbd>+<kbd>left/right-drag</kbd>: blur ' +
-       '<kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>: brush ' +
-       '<kbd>wheel</kbd>: zoom ' +
-       '<kbd>Space</kbd> / <kbd>middle button</kbd>: pan ' +
-       '<kbd>right button</kbd>: erase ' +
-       '<kbd>double right button</kbd>: clear all ' +
-       '<kbd>X</kbd>: mode ' +
-       '<kbd>' + MOD + '</kbd>+<kbd>Z</kbd> / <kbd>' + MOD + '</kbd>+<kbd>Y</kbd>: undo/redo</span>';
+       '<kbd>' + MOD + '</kbd>+<kbd>up/down-drag</kbd>:brush size' +
+       '<kbd>' + MOD + '</kbd>+<kbd>left/right-drag</kbd>:blur' +
+       '<kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>:brush' +
+       '<kbd>wheel</kbd>:zoom' +
+       '<kbd>Space</kbd>/<kbd>middle button</kbd>:pan' +
+       '<kbd>right button</kbd>:erase' +
+       '<kbd>double right button</kbd>:clear all' +
+       '<kbd>X</kbd>:mode' +
+       '<kbd>' + MOD + '</kbd>+<kbd>Z</kbd>/<kbd>' + MOD + '</kbd>+<kbd>Y</kbd>:undo/redo</span>';
 
   overlay.append(topbar, viewport, statusbar);
   document.body.appendChild(overlay);
+
+  // keep the OK button exactly as wide as the Cancel button (regardless of
+  // label length / font metrics); min-width so it can still grow if needed
+  try { okBtn.style.minWidth = cancelBtn.offsetWidth + "px"; } catch (e) {}
 
   ui = {
     overlay, topbar, viewport, wrap, canvas, loading, brushBadge, brushBadgeInner,
@@ -465,7 +469,7 @@ function loadImage(url) {
 
 function getSourceImage(node) {
   try {
-    // 1. connected IMAGE input (image_opt) - overrides the dropdown
+    // 1. connected IMAGE input (optional "image" input) - overrides the dropdown
     for (const inp of node.inputs || []) {
       if (inp.type !== "IMAGE" || !inp.link) continue;
       const link = app.graph.links[inp.link];
@@ -1301,6 +1305,43 @@ async function saveAndClose() {
     if (!fname) throw new Error("upload response missing filename");
     const sub = j.subfolder || "";
     const path = sub ? sub + "/" + fname : fname;
+    // Composite preview for the node display: color image + vivid mask in the
+    // hatch color, generated ONCE here as a small JPEG (max 1024px). The node
+    // only ever displays this ready-made file - it never composites/renders
+    // the mask itself, so there is zero continuous generation cost.
+    try {
+      const maxC = 1024;
+      const cs = Math.min(1, maxC / Math.max(st.fullW, st.fullH));
+      const cw = Math.max(1, Math.round(st.fullW * cs));
+      const chh = Math.max(1, Math.round(st.fullH * cs));
+      const cc = document.createElement("canvas");
+      cc.width = cw; cc.height = chh;
+      const cctx = cc.getContext("2d");
+      cctx.drawImage(st.img, 0, 0, cw, chh);
+      // mask (already blurred, full-res) becomes the alpha of the hatch color
+      const tc = document.createElement("canvas");
+      tc.width = cw; tc.height = chh;
+      const tctx = tc.getContext("2d");
+      tctx.fillStyle = st.hatchColor || "#ff3fd8";
+      tctx.fillRect(0, 0, cw, chh);
+      tctx.globalCompositeOperation = "destination-in";
+      tctx.drawImage(full, 0, 0, cw, chh);
+      cctx.globalAlpha = 0.75;
+      cctx.drawImage(tc, 0, 0);
+      cctx.globalAlpha = 1;
+      const compBlob = await new Promise((res) => cc.toBlob(res, "image/jpeg", 0.85));
+      if (compBlob) {
+        const cfd = new FormData();
+        cfd.append("image", compBlob, "fastmask_node" + st.node.id + "_composite.jpg");
+        cfd.append("overwrite", "true");
+        cfd.append("type", "input");
+        cfd.append("subfolder", "fastmask");
+        const cr = await api.fetchApi("/upload/image", { method: "POST", body: cfd });
+        if (!cr.ok) throw new Error("composite upload failed: " + cr.status);
+      }
+      // tell the node to load the fresh composite immediately (no polling)
+      try { if (window.__fmCompSync && window.__fmCompSync[st.node.id]) window.__fmCompSync[st.node.id](); } catch (e) {}
+    } catch (e) { /* composite is best-effort; mask saving already succeeded */ }
     const w = (st.node.widgets || []).find((w) => w.name === "mask_path");
     if (w) {
       // keep BOTH the widget value AND the serialized widgets_values in sync:
@@ -1447,6 +1488,13 @@ function alignPreviewTop(node) {
       // flex-only: align the preview to the top if any container is a flex column
       pbox.style.setProperty("align-self", "flex-start", "important");
     }
+    // the image fills the FULL WIDTH of the node; height follows automatically
+    // so the aspect ratio is always preserved (no distortion)
+    if (preview.tagName === "IMG") {
+      preview.style.setProperty("width", "100%", "important");
+      preview.style.setProperty("height", "auto", "important");
+      preview.style.setProperty("object-fit", "contain", "important");
+    }
     // top-align every widget container WITHOUT touching display/flex of children.
     // These properties are no-ops on static blocks and only take effect in the
     // (already-flex) node containers, where they stop the vertical centering
@@ -1467,50 +1515,53 @@ function alignPreviewTop(node) {
 function positionBottom(node) {
   try {
     const wOpen = node.widgets && node.widgets.find((x) => x.name === "fm_open");
-    // Collapse the button's slot in the widget flow first, then add a small
-    // bottom gap. Previously the button's 34px slot left a blank stripe above
-    // the preview — now that it is absolute we reclaim that space.
+    // The button is a NORMAL in-flow DOM widget: ComfyUI positions the widget
+    // wrapper itself, so the button ALWAYS moves / zooms / resizes together
+    // with the node and the other elements - with zero JS syncing.
+    // (The previous approach pinned it with position:absolute + a top computed
+    // from screen rects; that value went stale as soon as the node was moved,
+    // leaving the button fixed on the screen while the node drifted away.)
     try {
       if (wOpen) {
-        try { wOpen.computeSize = () => [-1, 0]; if (wOpen.element && wOpen.element.parentElement) wOpen.element.parentElement.style.height = "0px"; } catch (e) {}
-      }
-      const minH = 360;
-      if (node.size && node.size[1] < minH) {
-        node.size[1] = minH;
-        if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
-      }
-      // node padding = 34px button + 10px bottom inset + a clear ~18px gap
-      // above it, so the image-size line under the preview never touches the
-      // Edit Mask button.
-      const wantPad = 62;
-      if (!node._fmBottomPad) {
-        node._fmBottomPad = wantPad;
-        node.size[1] = (node.size[1] || 300) + wantPad;
-        if (node.onResize) try { node.onResize(node.size); } catch (e) {}
-        if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
-      } else if (node._fmBottomPad !== wantPad) {
-        const delta = wantPad - (typeof node._fmBottomPad === "number" ? node._fmBottomPad : 44);
-        if (delta !== 0) {
-          node.size[1] = (node.size[1] || 300) + delta;
-          node._fmBottomPad = wantPad;
-          if (node.onResize) try { node.onResize(node.size); } catch (e) {}
-          if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+        // give the widget its natural 34px slot back in the widget flow
+        wOpen.computeSize = () => [-1, 34];
+        const el = wOpen.element;
+        if (el) {
+          const box = el.closest(".comfy-widget") || el.parentElement;
+          if (box) {
+            // undo every override from the old absolute-pin layout
+            box.style.removeProperty("top");
+            box.style.removeProperty("left");
+            box.style.removeProperty("right");
+            box.style.removeProperty("bottom");
+            box.style.setProperty("position", "static", "important");
+            box.style.setProperty("width", "100%", "important");
+            box.style.setProperty("height", "34px", "important");
+            box.style.setProperty("z-index", "auto", "important");
+            box.style.setProperty("margin-top", "8px", "important");
+          }
         }
       }
     } catch (e) {}
-    if (wOpen && wOpen.element) {
-      const box = wOpen.element.closest(".comfy-widget") || wOpen.element.parentElement;
-      if (box) {
-        box.style.setProperty("height", "34px", "important");
-        box.style.setProperty("top", "auto", "important");
-        box.style.setProperty("bottom", "10px", "important");
-        box.style.setProperty("left", "8px", "important");
-        box.style.setProperty("right", "8px", "important");
-        box.style.setProperty("width", "calc(100% - 16px)", "important");
-        box.style.setProperty("position", "absolute", "important");
-        box.style.setProperty("z-index", "2", "important");
+    // remove the extra bottom padding that was only needed by the old
+    // absolute layout, so no empty stripe stays at the bottom of the node
+    try {
+      if (node._fmBottomPad) {
+        node.size[1] = Math.max(220, (node.size[1] || 300) - node._fmBottomPad);
+        node._fmBottomPad = 0;
+        if (node.onResize) try { node.onResize(node.size); } catch (e) {}
+        if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
       }
-    }
+    } catch (e) {}
+    // sane minimum height
+    try {
+      const minH = 240;
+      if (node.size && node.size[1] < minH) {
+        node.size[1] = minH;
+        if (node.onResize) try { node.onResize(node.size); } catch (e) {}
+        if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+      }
+    } catch (e) {}
     alignPreviewTop(node);
     // hide any stale version label or grey pill
     const nodeEl = wOpen && wOpen.element ? (wOpen.element.closest("[data-node-id]") || document.querySelector(`[data-node-id="${node.id}"]`) || wOpen.element.parentElement) : document.querySelector(`[data-node-id="${node.id}"]`);
@@ -1526,7 +1577,6 @@ function positionBottom(node) {
     }
   } catch (e) { /* no-op */ }
 }
-
 function findNodePreview(nodeEl) {
   if (!nodeEl) return null;
   // ComfyUI preview is usually an <img> with /view? or a <canvas>; the node's
@@ -1535,6 +1585,10 @@ function findNodePreview(nodeEl) {
   let best = null, bestArea = 0;
   for (const el of candidates) {
     if (el.id === "fm_open" || (el.closest && el.closest("#fm_open"))) continue;
+    // NEVER treat our own composite overlay as the preview - findNodePreview
+    // returning the overlay made the overlay logic target itself (the mask
+    // then silently disappeared after any frontend re-render)
+    if (el.classList && el.classList.contains("fm-node-tint")) continue;
     // preview images have a /view? src or are sizable
     const isPreview = (el.tagName === "IMG" && el.src && el.src.includes("/view")) || el.tagName === "CANVAS";
     if (!isPreview && el.tagName === "IMG") {
@@ -1547,92 +1601,145 @@ function findNodePreview(nodeEl) {
   return best;
 }
 
-function enableNodeHoverBW(node) {
+// Composite display on the node: the editor's OK button uploads a ready-made
+// composite JPEG (color image + vivid mask, max 1024px) to
+// fastmask/fastmask_node<id>_composite.jpg. The node only ever DISPLAYS that
+// file as an <img> - no per-frame generation, no pixel loops, no timers.
+// Repositioning on resize is layout-only (no re-fetch); a fresh composite is
+// loaded only after the editor's OK button notifies us via __fmCompSync.
+function enableNodeMaskOverlay(node) {
   try {
     const w = node.widgets && node.widgets.find((x) => x.name === "fm_open");
     if (!w || !w.element) return;
     const wrapper = w.element.closest(".comfy-widget") || w.element;
     const nodeEl = wrapper.closest("[data-node-id]") || document.querySelector(`[data-node-id="${node.id}"]`) || wrapper.parentElement;
     if (!nodeEl) return;
-    let preview = findNodePreview(nodeEl);
-    if (!preview) {
-      setTimeout(() => enableNodeHoverBW(node), 900);
-      return;
-    }
+    const preview = findNodePreview(nodeEl);
+    if (!preview) { setTimeout(() => enableNodeMaskOverlay(node), 900); return; }
     const box = preview.parentElement;
     if (!box) return;
-    if (box._fmHoverWired) return;
-    box._fmHoverWired = true;
-    // use the preview's container for hover so it works for both img and canvas
-    const enter = async () => {
+    if (box._fmCompWired) return;
+    box._fmCompWired = true;
+
+    const compName = "fastmask_node" + node.id + "_composite.jpg";
+    let lastPath = null;
+
+    const reposition = () => {
+      const ov = box._fmCompOv;
+      if (!ov) return;
+      // offset chain = layout px, invariant under the workspace zoom transform
+      let left = 0, top = 0, nOff = preview;
+      while (nOff && nOff !== box) { left += nOff.offsetLeft; top += nOff.offsetTop; nOff = nOff.offsetParent; }
+      // The composite has the SAME aspect ratio as the source image, so it must
+      // be placed on the image's ACTUAL rendered area (object-fit: contain /
+      // cover / fill of the source image inside the preview box) - never
+      // stretched over the whole preview rect, which would distort it.
+      const pw = preview.offsetWidth, ph = preview.offsetHeight;
+      const sw = preview.naturalWidth || preview.width || 0;
+      const sh = preview.naturalHeight || preview.height || 0;
+      let rw = pw, rh = ph;
+      if (sw > 0 && sh > 0 && pw > 0 && ph > 0) {
+        let fit = "fill";
+        try { fit = getComputedStyle(preview).objectFit || "fill"; } catch (e) {}
+        if (fit === "contain" || fit === "cover" || fit === "none" || fit === "scale-down") {
+          const s = fit === "cover" ? Math.max(pw / sw, ph / sh) : Math.min(pw / sw, ph / sh);
+          rw = Math.min(pw, sw * s);
+          rh = Math.min(ph, sh * s);
+          left += (pw - rw) / 2;
+          top += (ph - rh) / 2;
+        }
+      }
+      ov.style.left = left + "px";
+      ov.style.top = top + "px";
+      ov.style.width = rw + "px";
+      ov.style.height = rh + "px";
+      // overlay rect == image aspect exactly, so "fill" here keeps 1:1 scale
+      ov.style.objectFit = "fill";
+    };
+    const refresh = (force) => {
       const mp = (node.widgets || []).find((x) => x.name === "mask_path");
-      if (!mp || !mp.value) { console.log("[FastMask] hover: no mask_path", node.id); return; }
-      if (box.querySelector(".fm-node-bw")) return;
-      const seg = String(mp.value).split("/");
-      const fname = seg.pop();
-      const sub = seg.join("/");
-      // cache-bust: the mask file is overwritten in place on every OK, so the
-      // browser would otherwise serve the stale /view URL from cache (old,
-      // un-blurred mask). A fresh timestamp forces a reload.
-      const url = api.apiURL("/view?" + new URLSearchParams({ filename: fname, subfolder: sub, type: "input", _t: Date.now() }));
-      console.log("[FastMask] hover load mask", url);
-      const ov = document.createElement("div");
-      ov.className = "fm-node-bw";
-      // exactly cover the preview element (not the box - the box also holds the
-      // image-size line and is taller). The mask <img> inside uses the SAME
-      // object-fit as the color preview, so the browser renders the B/W mask at
-      // exactly the same size/position as the color image (contain matches the
-      // letterboxed image area, fill matches a stretched image, both identical
-      // to what the color preview does - no manual scaling that can drift).
-      const rect = preview.getBoundingClientRect();
-      const boxRect = box.getBoundingClientRect();
-      const left = rect.left - boxRect.left;
-      const top = rect.top - boxRect.top;
-      const fit = preview.tagName === "IMG" ? (getComputedStyle(preview).objectFit || "fill") : "fill";
-      ov.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${rect.width}px;height:${rect.height}px;background:#000;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:10;overflow:hidden`;
-      const im = document.createElement("img");
-      im.src = url;
-      im.style.cssText = `width:100%;height:100%;display:block;object-fit:${fit};filter:grayscale(1) contrast(1.2)`;
-      im.onload = () => console.log("[FastMask] mask img loaded", im.naturalWidth);
-      im.onerror = () => console.log("[FastMask] mask load error", url);
-      ov.appendChild(im);
-      box.style.position = "relative";
-      box.appendChild(ov);
-      box._fmBwOv = ov;
-      // if the preview itself is the box (img directly), ensure ov covers it
-      if (preview.tagName === "IMG") {
-        // hide preview img while showing mask for true B/W toggle
-        preview.style.visibility = "hidden";
+      const cur = mp && mp.value ? String(mp.value) : null;
+      if (!cur) {
+        lastPath = null;
+        if (box._fmCompOv) box._fmCompOv.style.display = "none";
+        return;
+      }
+      if (!box._fmCompOv) {
+        const ov = document.createElement("img");
+        ov.className = "fm-node-tint";
+        ov.style.cssText = "position:absolute;pointer-events:none;z-index:10;object-fit:fill;";
+        ov.onerror = () => { ov.style.display = "none"; ov._fmFailed = lastPath; }; // no composite saved yet
+        box.style.position = "relative";
+        box.appendChild(ov);
+        box._fmCompOv = ov;
+      }
+      const ov = box._fmCompOv;
+      // self-heal: if the frontend re-rendered the node and dropped our
+      // overlay from the DOM, re-attach it instead of staying invisible
+      if (!ov.isConnected) box.appendChild(ov);
+      ov.style.display = "block";
+      // composite file not saved yet (pre-1.5.0 masks): stay hidden, do not
+      // churn the network every tick; a forced refresh (OK) retries once
+      if (ov._fmFailed === cur) {
+        if (!force) { reposition(); return; }
+        ov._fmFailed = null;
+      }
+      reposition();
+      // new timestamped src ONLY when the mask path changed or OK notified us
+      if (cur !== lastPath || force || !ov.src) {
+        lastPath = cur;
+        ov.src = api.apiURL("/view?" + new URLSearchParams({ filename: compName, subfolder: "fastmask", type: "input", _t: Date.now() }));
       }
     };
-    const leave = () => {
-      const ov = box._fmBwOv;
-      if (ov) { try { ov.remove(); } catch (e) {} box._fmBwOv = null; }
-      // restore preview visibility
-      const pv = findNodePreview(nodeEl);
-      if (pv && pv.tagName === "IMG") pv.style.visibility = "";
-    };
-    box.addEventListener("mouseenter", enter);
-    box.addEventListener("mouseleave", leave);
-    // also watch the preview itself if it's separate
-    preview.addEventListener("mouseenter", enter);
-    preview.addEventListener("mouseleave", leave);
-    // re-wire if preview changes (new image)
-    if (!box._fmObserver) {
-      const mo = new MutationObserver(() => {
-        // preview may be replaced; re-find on next hover
+    // ultra-cheap self-heal tick: only ensures the overlay exists, is attached
+    // and is positioned (NO image re-fetch unless mask_path changed). This
+    // recovers the mask after any ComfyUI DOM re-render that removed it.
+    if (!box._fmCompTimer) {
+      box._fmCompTimer = setInterval(() => {
+        try {
+          const mp = (node.widgets || []).find((x) => x.name === "mask_path");
+          if (!(mp && mp.value)) return;
+          refresh(false);
+        } catch (e) {}
+      }, 2000);
+    }
+    // the editor's saveAndClose calls this right after uploading the composite
+    window.__fmCompSync = window.__fmCompSync || {};
+    window.__fmCompSync[node.id] = () => refresh(true);
+    // cheap layout-only reposition on node resize - no image re-fetch
+    if (!box._fmCompRO && typeof ResizeObserver === "function") {
+      const ro = new ResizeObserver(reposition);
+      ro.observe(preview);
+      box._fmCompRO = ro;
+    }
+    // the fit-rect needs naturalWidth/naturalHeight, which only exist AFTER the
+    // preview image has loaded - re-measure then (aspect-correct placement)
+    if (preview.tagName === "IMG" && !preview._fmCompLoadHook) {
+      preview._fmCompLoadHook = true;
+      preview.addEventListener("load", reposition);
+    }
+    // re-wire when the preview element itself is replaced (new image loaded).
+    // Mutations caused by our own overlay (fm-node-tint img) are ignored.
+    if (!box._fmCompObs) {
+      const mo = new MutationObserver((muts) => {
+        for (const m of muts) {
+          if (m.type !== "childList") continue;
+          for (const an of m.addedNodes) if (an && an.classList && an.classList.contains("fm-node-tint")) return;
+          for (const rn of m.removedNodes) if (rn && rn.classList && rn.classList.contains("fm-node-tint")) return;
+        }
         const np = findNodePreview(nodeEl);
         if (np && np !== preview) {
-          box._fmHoverWired = false;
-          enableNodeHoverBW(node);
+          box._fmCompWired = false;
+          if (box._fmCompRO) { try { box._fmCompRO.disconnect(); } catch (e) {} box._fmCompRO = null; }
+          enableNodeMaskOverlay(node);
         }
       });
-      mo.observe(box, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
-      box._fmObserver = mo;
+      mo.observe(box, { childList: true, subtree: true });
+      box._fmCompObs = mo;
     }
+    refresh(false);
   } catch (e) { /* no-op */ }
 }
-
 function addOpenButton(node) {
   if (!node) return;
   stripStaleWidgets(node);
@@ -1641,10 +1748,10 @@ function addOpenButton(node) {
   // stale oval button can appear a tick later. Our own fm_open/fm_version are
   // preserved by stripStaleWidgets.
   try {
-    requestAnimationFrame(() => { stripStaleWidgets(node); positionBottom(node); enableNodeHoverBW(node); });
-    setTimeout(() => { stripStaleWidgets(node); positionBottom(node); enableNodeHoverBW(node); }, 0);
-    setTimeout(() => { stripStaleWidgets(node); positionBottom(node); enableNodeHoverBW(node); }, 300);
-    setTimeout(() => { positionBottom(node); enableNodeHoverBW(node); }, 900);
+    requestAnimationFrame(() => { stripStaleWidgets(node); positionBottom(node); enableNodeMaskOverlay(node); });
+    setTimeout(() => { stripStaleWidgets(node); positionBottom(node); enableNodeMaskOverlay(node); }, 0);
+    setTimeout(() => { stripStaleWidgets(node); positionBottom(node); enableNodeMaskOverlay(node); }, 300);
+    setTimeout(() => { positionBottom(node); enableNodeMaskOverlay(node); }, 900);
     setTimeout(() => { positionBottom(node); }, 1800);
   } catch (e) { /* no-op */ }
 

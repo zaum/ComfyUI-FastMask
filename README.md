@@ -1,76 +1,80 @@
 # ComfyUI-FastMask
 
-Nagyon gyors, saját fejlesztésű maszk editor a ComfyUI-hoz – a gyári MaskEditor alternatívája, teljesen új, teljesítményközpontú architektúrával.
+A very fast, custom-built mask editor for ComfyUI – an alternative to the built-in MaskEditor, with a completely new, performance-focused architecture.
 
-![status](https://img.shields.io/badge/status-beta-orange)
+![status](https://img.shields.io/badge/version-1.6.4-blue) ![status](https://img.shields.io/badge/status-beta-orange)
 
-## Telepítés
+## Installation
 
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/zaum/ComfyUI-FastMask
 ```
 
-ComfyUI újraindítás után keresd a **`FastMask Editor`** node-ot a `mask` kategóriában.
+After restarting ComfyUI, look for the **`FastMask Editor`** node in the `mask` category.
 
-## Használat
+## Usage
 
-A node egyben **képbetöltő is** (mint a gyári LoadImage):
+The node is also an **image loader** (just like the built-in LoadImage):
 
-1. A node `image` dropdownjában válaszd ki a képet a ComfyUI input mappából, vagy tölts fel képet közvetlenül a node-ra (a beépített **feltöltés** gombbal).
-2. A node-on lévő **🖌 FastMask Editor** gombbal (vagy jobb klikk → *Open in FastMask Editor*) nyisd meg a full-screen editort.
-3. Fess, majd **OK** – a maszk full felbontásban elmentődik a `ComfyUI/input/fastmask/` mappába, az editor újramegnyitásakor a korábbi maszk **visszatöltődik** és tovább szerkeszthető.
-4. A node két outputot ad: `IMAGE` (a betöltött kép) és `MASK` (1.0 = maszkolt terület). A futtatás után a node-on megjelenik a kép előnézete.
+1. Select an image from the ComfyUI input folder in the node's `image` dropdown, or upload an image directly onto the node (using the built-in **upload** button). Alternatively, you can connect an image to the **`image_opt`** input (e.g. from a LoadImage output) – a connected image overrides the dropdown selection.
+2. Open the full-screen editor with the **Edit Mask** button on the node.
+3. Paint, then press **OK** – the mask is saved at full resolution into the `ComfyUI/input/fastmask/` folder; when you reopen the editor, the previous mask is **restored** and you can keep editing it.
+4. In addition to the mask, the OK button also generates and uploads a **composite preview image** (image + vivid mask, max. 1024 px, JPEG). This is displayed **permanently** on the node preview – no need to hover the mouse, and it refreshes automatically after every OK.
+5. The node has two outputs: `IMAGE` (the loaded image) and `MASK` (1.0 = masked area).
 
-## Funkciók
+## Features
 
-| Funkció | Parancs |
+| Feature | Command |
 |---|---|
-| Festés (kerek brush) | **Bal egérgomb** nyomva tartva |
-| Törlés | **Jobb egérgomb** nyomva tartva |
-| Brush méret | **Ctrl + bal gomb húzás** (függőlegesen), **Ctrl + görgő**, `[` / `]`, vagy a csúszka |
-| Maszk blur | **Ctrl + bal gomb húzás** (vízszintesen) vagy a **Blur** csúszka – a maszk éle real time elmosódik a fekete-fehér nézetben; a csúszka a B/W előnézetben is látszik. Alapértelmezett: 0% (nincs blur) |
-| Maszkolás/Törlés mód váltás | `X` vagy a gombok |
-| Zoom | **Egérgörgő** (a kurzorhoz igazodva) |
-| Pan | **Középső gomb húzás** vagy **Space** nyomva tartva |
-| Zárt alakzat auto-kitöltés | alapból be – a zárt körvonal belső része magától kitöltődik; kapcsoló: `F` |
-| Undo / Redo | `Ctrl+Z` / `Ctrl+Y` vagy `Ctrl+Shift+Z` (mac: `⌘`) |
-| Clear all | `Ctrl+Delete` vagy gomb |
-| Show mask (fekete-fehér) | gomb **fölé állva (hover)** már előnézet; **kattintva rögzített** nézet, ilyenkor is szerkeszthető |
-| Háló (hatch) színe | `C` vagy a gomb → színválasztó |
-| Fit / teljes kép | `Ctrl+0` |
-| OK / Cancel | `Enter` / `Esc` |
+| Painting (round brush) | Hold the **left mouse button** |
+| Erasing | Hold the **right mouse button** |
+| Brush size | **Ctrl + drag up/down**, **Ctrl + mouse wheel**, `[` / `]`, or the slider |
+| Mask blur | **Ctrl + drag left/right** or the **Blur** slider – the mask edge softens in real time in the black-and-white view. Default: 0% (no blur) |
+| Ctrl + drag direction selection | After a 20 px deadzone the drag locks to the dominant axis: **vertical = size**, **horizontal = blur** – values never "jump" when switching |
+| Brush visual indicator | With blur > 0 a dashed, concentric inner circle shows the blur amount (at 0% only the outer circle is visible); while moving the sliders, the brush preview appears at the center of the canvas |
+| Paint/Erase mode switch | `X` or the Paint/Erase toggle (blue in both states) |
+| Zoom | **Mouse wheel** (anchored to the cursor) |
+| Pan | **Middle button drag** or hold **Space** |
+| Closed-shape auto-fill | On by default – the interior of a closed outline fills in automatically; toggle: `F` |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Y` or `Ctrl+Shift+Z` (mac: `⌘`) |
+| Clear all | `Ctrl+Delete` or button |
+| Show mask (black & white) | **Hovering** the button already shows a preview; **clicking** pins the view – editing still works while pinned |
+| Hatch color | `C` or the button → color picker |
+| Fit / whole image | `Ctrl+0` |
+| OK / Cancel | `Enter` / `Esc` (both buttons have the same width) |
 
-Minden gomb **hoverére kiírja a saját billentyűparancsát**. Mac-en a `Ctrl` helyett `⌘` jelenik meg.
+Every button **shows its own keyboard shortcut on hover**. On mac, `⌘` is displayed instead of `Ctrl`. After releasing a slider, the canvas is automatically fully repainted (no stale artifacts), and the brush preview disappears immediately.
 
-## Miért gyorsabb, mint a gyári MaskEditor?
+## Why is it faster than the built-in MaskEditor?
 
-A gyári editor minden egérmozdulatnál nagyobb területet renderel újra, teljes képes snapshotokat tárol undo-hoz, és a maskadatokat JS tömbökben másolgatja. A FastMask ettől teljesen eltérő architektúrával készült:
+The built-in editor re-renders a large area on every mouse move, stores full-image snapshots for undo, and copies mask data in JS arrays. FastMask uses a completely different architecture:
 
-- **Offscreen 2D canvas a maszk számára** – a festés natív, GPU-gyorsított canvas stroke-okkal történik; egy ecsetvonás nem hoz létre JS objektumokat.
-- **Dirty-rectangle renderelés** – minden frame csak az érintett téglalapokat rajzolja újra, soha nem a teljes képet.
-- **Egyetlen `requestAnimationFrame` loop**, ami csak akkor rajzol, ha történt változás (nincs folyamatos redraw).
-- **Preview resolution + full-res export** – nagy képnél a szerkesztés egy 2048 px-es preview-n történik, a végleges maszk a **teljes eredeti felbontásban** készül el (az OK gombnál egyetlen `drawImage` + `getImageData` skálázással, `Uint8Array`/`ImageData` formában).
-- **Zoom/pan = tiszta CSS transform** – nulla költségű navigáció, akár 32× nagyításnál is.
-- **Tile-alapú undo/redo** – nem teljes képeket másol, hanem csak a vonás által ténylegesen érintett 256×256-os csempéket (lazy snapshot, max. 40 lépés).
-- **Zárt alakzat kitöltése** – a vonás végpontja alapján detektált zárt körvonalat egyetlen `evenodd` scanline fill-lel tölti ki temp canvasen keresztül.
-- **Real-time maszk blur** – a **Blur** csúszka (0–100%) a maszk széleit Gaussian-blurral lágyítja, ami a szerkesztés közben, a fekete-fehér nézetben élőben követi a változtatást, és a full-res exportnál is megmarad. Az egéren egy szaggatott belső kör mutatja a blur mértékét (0%-nál csak a külső kör látszik). A **Ctrl + bal gomb húzás** függőlegesen a brush méretet, vízszintesen a blurt változtatja.
+- **Offscreen 2D canvas for the mask** – painting is done with native, GPU-accelerated canvas strokes; a single brush stroke does not create any JS objects.
+- **Dirty-rectangle rendering** – every frame redraws only the affected rectangles, never the whole image. The "halo" of a blurred brush is accounted for in both the dirty rect and the undo tiles, so soft edges always refresh instantly.
+- **A single `requestAnimationFrame` loop** that only draws when something changed (no continuous redrawing).
+- **Preview resolution + full-res export** – on large images, editing happens on a 2048 px preview; the final mask is produced at the **full original resolution** (at OK: a single `drawImage` + `getImageData` with scaling, as a `Uint8Array`/`ImageData`).
+- **Zoom/pan = pure CSS transform** – zero-cost navigation, even at 32× magnification.
+- **Tile-based undo/redo** – instead of copying whole images, it only snapshots the 256×256 tiles actually touched by the stroke (lazy snapshots, max. 40 steps).
+- **Closed-shape filling** – a closed outline detected from the stroke endpoints is filled with a single `evenodd` scanline fill via a temp canvas.
+- **Real-time mask blur** – the **Blur** slider (0–100%) softens the mask edges with a Gaussian blur, tracked live in the black-and-white view while editing, and preserved in the full-res export as well.
+- **Cheap node preview** – the node's composite (image + mask) is a small, pre-generated JPEG; the frontend only **displays** it (no runtime pixel manipulation, no timer-based re-rendering), it scales with the workspace zoom without distortion, always preserving the aspect ratio.
 
-## SAM szegmentáció – tervezett kiterjesztés (nem implementált)
+## SAM segmentation – planned extension (not implemented)
 
-Terv szerint a későbbiekben gyors, egyszerű SAM szegmentáció is bekerül:
+The plan is to add fast, simple SAM segmentation later:
 
-- **Modell:** MobileSAM vagy FastSAM (ONNX formában) a böngészőben futtatva **onnxruntime-web + WebGPU backend**-mel (WebGPU híján WASM fallback). Így nem kell szerveroldali GPU-t foglalni, és nincs extra ComfyUI függőség.
-- **Működés:** az objektum fölé vivendő kurzor pozíciójáról (box + point prompt) a modell ~50–100 ms alatt embedding-alapú maszkot ad; az élő előnézet a hálóval azonos overlay csatornán jelenne meg.
-- **Aktiválás:** `Shift` nyomva tartva (alkalmi használat), **Caps Lock** (folyamatos mód), vagy UI kapcsoló. Kattintással / `Enter`-rel fogadnád el a felkínált maszkot, ami azonnal a maszk rétegbe komponálódna.
-- **Gyorsaság:** az image embeddinget csak egyszer számolnád kép-/zoomváltásonként (cache-elve), a point promptok csak a lightweight mask decodert futtatják – ezért tud interaktív lenni.
+- **Model:** MobileSAM or FastSAM (in ONNX form) running in the browser via **onnxruntime-web with a WebGPU backend** (WASM fallback if WebGPU is unavailable). This avoids occupying a server-side GPU and adds no extra ComfyUI dependency.
+- **Operation:** from the cursor position over the object (box + point prompt), the model returns an embedding-based mask in ~50–100 ms; the live preview would appear on the same overlay channel as the hatch.
+- **Activation:** hold `Shift` (occasional use), **Caps Lock** (continuous mode), or a UI toggle. You would accept the offered mask with a click / `Enter`, and it would be composited into the mask layer immediately.
+- **Speed:** the image embedding would be computed only once per image/zoom change (cached), point prompts only run the lightweight mask decoder – that's what makes it interactive.
 
-Ez a funkció jelenleg **nem része** a csomagnak, a fenti a tervezett architektúra.
+This feature is currently **not part** of the package; the above is the planned architecture.
 
-## Kompatibilitás
+## Compatibility
 
 - ComfyUI frontend (latest), Windows / Linux / macOS
-- A mentés a ComfyUI szabványos `/upload/image` API-ját használja, nincs szükség extra szerveroldali komponensre.
+- Saving uses the standard ComfyUI `/upload/image` API – no extra server-side component is required.
 
 ## License
 
