@@ -51,6 +51,16 @@ class FastMaskEditor:
         "mask. Outputs IMAGE and MASK (1.0 = masked area)."
     )
 
+    @classmethod
+    def VALIDATE_INPUTS(s, image, **kwargs):
+        # The image combo list is computed at node-definition time, but new
+        # files can appear later (Ctrl+V paste -> input/paste/xxx.png, direct
+        # upload). The default "value must be in list" validation would reject
+        # those, so validate by file existence instead - same as LoadImage.
+        if not folder_paths.exists_annotated_filepath(image):
+            return f"Invalid image file: {image}"
+        return True
+
     def load(self, image, mask_path="", image_opt=None):
         import time, traceback
         try:

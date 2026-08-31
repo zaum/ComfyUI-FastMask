@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.6.4";
+const FM_VERSION = "1.6.9";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -86,6 +86,9 @@ const CSS = `
 .fm-viewport.fm-panning{cursor:grabbing}
 .fm-node-bw{position:absolute;inset:0;background:#000;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:5}
 .fm-wrap{position:absolute;left:0;top:0;transform-origin:0 0}
+/* screen-resolution overlay for the brush cursor: stays crisp even when the
+   preview canvas itself is low-res and heavily upscaled by the zoom */
+.fm-cursorlayer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:2}
 .fm-wrap canvas{display:block}
 .fm-wrap canvas.fm-bw{outline:1px solid rgba(255,255,255,.28);outline-offset:-1px}
 .fm-statusbar{display:flex;gap:28px;padding:5px 12px;background:#1b1b1b;border-top:1px solid #333;font-size:12px;color:#aaa;flex-wrap:wrap}
@@ -264,7 +267,10 @@ function buildUI() {
   const brushBadgeInner = document.createElement("div");
   brushBadgeInner.className = "fm-brushbadge-inner";
   brushBadge.appendChild(brushBadgeInner);
-  viewport.append(loading, wrap, brushBadge);
+  // screen-resolution brush cursor overlay (crisp at any zoom / image size)
+  const cursorLayer = document.createElement("canvas");
+  cursorLayer.className = "fm-cursorlayer";
+  viewport.append(loading, wrap, cursorLayer, brushBadge);
 
   const statusbar = document.createElement("div");
   statusbar.className = "fm-statusbar";
@@ -288,14 +294,24 @@ function buildUI() {
   document.body.appendChild(overlay);
 
   // keep the OK button exactly as wide as the Cancel button (regardless of
-  // label length / font metrics); min-width so it can still grow if needed
-  try { okBtn.style.minWidth = cancelBtn.offsetWidth + "px"; } catch (e) {}
+  // label length / font metrics); min-width so it can still grow if needed.
+  // Measured AFTER the overlay becomes visible (openEditor removes fm-hidden) -
+  // while hidden, offsetWidth is 0 and the sync would silently do nothing.
+  const syncOkWidth = () => {
+    try {
+      const w = cancelBtn.offsetWidth;
+      if (w > 0) okBtn.style.minWidth = w + "px";
+    } catch (e) {}
+  };
+  requestAnimationFrame(syncOkWidth);
+  setTimeout(syncOkWidth, 60);
+  setTimeout(syncOkWidth, 300);
 
   ui = {
     overlay, topbar, viewport, wrap, canvas, loading, brushBadge, brushBadgeInner,
     modeBtn, modeToggle, paintLabel, eraseLabel, clearAll, undoBtn, redoBtn, brushSlider, blurSlider,
     hatchBtn, swatch, colorInput, fillToggle, showMask,
-    fitBtn, cancelBtn, okBtn,
+    fitBtn, cancelBtn, okBtn, cursorLayer,
     stBrush: statusbar.querySelector("#fmStBrush"),
     stBlur: statusbar.querySelector("#fmStBlur"),
     stZoom: statusbar.querySelector("#fmStZoom"),
@@ -319,6 +335,23 @@ async function openEditor(node) {
   ui.overlay.classList.remove("fm-hidden");
   ui.loading.classList.remove("fm-hidden");
   ui.wrap.classList.add("fm-hidden");
+
+  // window resizes change the viewport size -> cursor overlay must rescale
+  if (!openEditor._resizeWired) {
+    openEditor._resizeWired = true;
+    window.addEventListener("resize", () => { if (st) st.cursorDirty = true; });
+  }
+
+  // OK button width sync must run while the overlay is VISIBLE (hidden
+  // elements measure 0), so re-sync right after showing the editor
+  const syncW = () => {
+    try {
+      const w = ui.cancelBtn.offsetWidth;
+      if (w > 0) ui.okBtn.style.minWidth = w + "px";
+    } catch (e) {}
+  };
+  requestAnimationFrame(syncW);
+  setTimeout(syncW, 100);
 
   let img;
   try {
@@ -367,6 +400,7 @@ async function openEditor(node) {
   st = {
     node, fullW, fullH, pw, ph, previewScale: pw / fullW,
     baseCanvas, maskCanvas, mctx, tintCanvas, tctx, tempCanvas, tempCtx, vctx,
+    cursorCtx: ui.cursorLayer.getContext("2d"),
     img,
     view: { scale: 1, x: 0, y: 0 },
     fitScale: 1,
@@ -502,6 +536,8 @@ function toast(title, detail, severity) {
 function applyTransform() {
   ui.wrap.style.transform = "translate(" + st.view.x + "px," + st.view.y + "px) scale(" + st.view.scale + ")";
   ui.stZoom.textContent = Math.round(st.view.scale * 100) + "%";
+  // the cursor overlay is drawn in screen coords -> reposition on any view change
+  st.cursorDirty = true;
 }
 
 function fitView() {
@@ -614,31 +650,55 @@ function cursorRect(c) {
   return { x, y, w, h };
 }
 
-// Thin (screen-space ~1px) brush outline + center crosshair. Both are drawn in
-// the SAME canvas frame, so the crosshair can never lag behind the circle.
+// Brush cursor ring + (when blur > 0) inner dashed circle, drawn on a
+// SCREEN-RESOLUTION overlay canvas (devicePixelRatio-aware) instead of the
+// preview canvas. The preview canvas is only pw x ph and gets upscaled by the
+// zoom transform, which made the circle blurry/jagged on small images - the
+// overlay stays perfectly crisp at any zoom level.
+function sizeCursorLayer() {
+  const lay = ui.cursorLayer;
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const w = Math.max(1, Math.round(ui.viewport.clientWidth * dpr));
+  const h = Math.max(1, Math.round(ui.viewport.clientHeight * dpr));
+  if (lay.width !== w || lay.height !== h) { lay.width = w; lay.height = h; }
+}
+
+function clearCursorLayer() {
+  const g = st && st.cursorCtx;
+  if (!g) return;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, g.canvas.width, g.canvas.height);
+}
+
 function drawCursor() {
-  // Circle outline + (when blur > 0) an inner concentric dashed circle whose
-  // radius grows with the blur amount. 0% blur -> only the outer circle.
-  const v = st.vctx, c = st.cursor;
-  const rad = brushRadiusCanvas();
-  const lw = 1 / st.view.scale;
-  v.save();
-  v.lineWidth = lw;
-  v.strokeStyle = "rgba(255,255,255,.95)";
-  v.shadowColor = "rgba(0,0,0,.9)";
-  v.shadowBlur = 2 / st.view.scale;
-  v.beginPath(); v.arc(c.x, c.y, rad, 0, Math.PI * 2); v.stroke();
+  const g = st.cursorCtx;
+  if (!g) return;
+  sizeCursorLayer();
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const s = st.view.scale, c = st.cursor;
+  // canvas coords -> viewport px -> device px
+  const sx = (st.view.x + c.x * s) * dpr;
+  const sy = (st.view.y + c.y * s) * dpr;
+  const rs = Math.max(1, brushRadiusCanvas() * s * dpr);
+  const lw = Math.max(1, 1.25 * dpr);
+  g.save();
+  g.lineWidth = lw;
+  g.strokeStyle = "rgba(255,255,255,.95)";
+  g.shadowColor = "rgba(0,0,0,.9)";
+  g.shadowBlur = 2 * dpr;
+  g.beginPath(); g.arc(sx, sy, rs, 0, Math.PI * 2); g.stroke();
   if (st.blurPct > 0) {
-    const irad = rad * (st.blurPct / 100);
-    if (irad > lw * 2) {
-      const dash = 4 / st.view.scale;
-      v.strokeStyle = "rgba(255,255,255,.7)";
-      v.setLineDash([dash, dash]);
-      v.beginPath(); v.arc(c.x, c.y, irad, 0, Math.PI * 2); v.stroke();
-      v.setLineDash([]);
+    // inner concentric dashed circle grows with the blur amount
+    const irs = rs * (st.blurPct / 100);
+    if (irs > lw * 2) {
+      const dash = Math.max(2, 4 * dpr);
+      g.strokeStyle = "rgba(255,255,255,.7)";
+      g.setLineDash([dash, dash]);
+      g.beginPath(); g.arc(sx, sy, irs, 0, Math.PI * 2); g.stroke();
+      g.setLineDash([]);
     }
   }
-  v.restore();
+  g.restore();
 }
 
 // Single rAF loop: dirty rects + cursor, otherwise nothing to do.
@@ -655,24 +715,13 @@ function frame() {
     st.cursorDirty = true;
   }
   if (st.cursorDirty) {
+    // the cursor lives on its own screen-resolution overlay now - no need to
+    // repaint image rects to erase it, just clear + redraw the overlay
     const c = st.cursor;
-    const inside = c.inside && !st.panning;
-    let r = inside ? cursorRect(c) : null;
-    if (st.prevCursor && r) {
-      // Redraw the UNION of the previous and current cursor rects as ONE rect.
-      // Rendering two adjacent rects leaves faint square seams in B/W mode.
-      const p = st.prevCursor;
-      const x0 = Math.min(p.x, r.x), y0 = Math.min(p.y, r.y);
-      const x1 = Math.max(p.x + p.w, r.x + r.w), y1 = Math.max(p.y + p.h, r.y + r.h);
-      r = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-    } else if (!r && st.prevCursor) {
-      r = st.prevCursor; // cursor left: restore its area only
-    }
-    if (r) {
-      renderRect(r);
-      st.prevCursor = inside ? r : null;
-      if (inside) drawCursor();
-    }
+    const inside = c.inside && !st.panning && !st.sizing;
+    clearCursorLayer();
+    if (inside) drawCursor();
+    st.prevCursor = null;
     st.cursorDirty = false;
   }
   st.raf = requestAnimationFrame(frame);
@@ -1396,6 +1445,11 @@ function wireImageMaskReset(node) {
     imgW.callback = function () {
       const r = orig ? orig.apply(this, arguments) : undefined;
       const cur = imgW.value;
+      // a pasted/uploaded file is not in the combo list computed at startup -
+      // add it so the frontend combo validation does not reject the value
+      if (imgW.options && Array.isArray(imgW.options.values) && !imgW.options.values.includes(cur)) {
+        imgW.options.values.push(cur);
+      }
       if (imgW._fmLast === undefined) { imgW._fmLast = cur; return r; }
       if (imgW._fmLast !== cur) {
         const mp = (node.widgets || []).find((w) => w.name === "mask_path");
@@ -1694,10 +1748,34 @@ function enableNodeMaskOverlay(node) {
     // ultra-cheap self-heal tick: only ensures the overlay exists, is attached
     // and is positioned (NO image re-fetch unless mask_path changed). This
     // recovers the mask after any ComfyUI DOM re-render that removed it.
+    // ALSO: when the source image (image widget) changes, the previously
+    // painted mask no longer matches the new image - clear mask_path and hide
+    // the stale composite so the old mask does NOT reappear on a new image.
     if (!box._fmCompTimer) {
       box._fmCompTimer = setInterval(() => {
         try {
           const mp = (node.widgets || []).find((x) => x.name === "mask_path");
+          const imgW = (node.widgets || []).find((x) => x.name === "image");
+          const imgVal = imgW ? String(imgW.value == null ? "" : imgW.value) : "";
+          if (box._fmLastImgVal === undefined) {
+            box._fmLastImgVal = imgVal; // first tick: just remember, do not clear
+          } else if (imgVal !== box._fmLastImgVal) {
+            box._fmLastImgVal = imgVal;
+            // keep the combo list in sync with pasted/uploaded files so the
+            // frontend validation accepts the new value
+            if (imgW && imgW.options && Array.isArray(imgW.options.values) && !imgW.options.values.includes(imgVal)) {
+              imgW.options.values.push(imgVal);
+            }
+            if (mp && mp.value) {
+              mp.value = "";
+              const idx = (node.widgets || []).indexOf(mp);
+              if (idx >= 0 && node.widgets_values) node.widgets_values[idx] = "";
+              if (typeof node.setWidgetValue === "function") { try { node.setWidgetValue("mask_path", ""); } catch (e) {} }
+              if (typeof mp.callback === "function") { try { mp.callback.call(mp, mp.value); } catch (e) {} }
+            }
+            if (box._fmCompOv) box._fmCompOv.style.display = "none";
+            lastPath = null;
+          }
           if (!(mp && mp.value)) return;
           refresh(false);
         } catch (e) {}
@@ -1743,6 +1821,10 @@ function enableNodeMaskOverlay(node) {
 function addOpenButton(node) {
   if (!node) return;
   stripStaleWidgets(node);
+  // our own paste handlers (Ctrl+V and the right-click "Paste Image" menu
+  // action both route through node.pasteFile / node.pasteFiles)
+  installFastMaskPaste(node);
+
   // re-clean on the next frames too: some extensions (e.g. the built-in image
   // upload preview) add their widgets only AFTER the node is configured, so a
   // stale oval button can appear a tick later. Our own fm_open/fm_version are
@@ -1789,6 +1871,89 @@ function addOpenButton(node) {
     }
   }
   fmLog("could not add open button:", node.id);
+}
+
+/* ----------------- image paste (Ctrl+V / right-click menu) ---------------- */
+// Applies a freshly uploaded image to the node: selects it in the image combo,
+// syncs the serialized widgets_values and clears the previous mask (a new
+// image means the old mask no longer applies). Self-contained so it works
+// even when the built-in upload-widget machinery skips its own steps.
+function fmApplyNewImageToNode(node, value) {
+  const setW = (name, v) => {
+    const w = (node.widgets || []).find((x) => x.name === name);
+    if (!w) return;
+    if (name === "image") {
+      // make sure the combo accepts the freshly uploaded file name
+      if (!w.options) w.options = {};
+      if (!Array.isArray(w.options.values)) w.options.values = [];
+      if (!w.options.values.includes(v)) w.options.values.push(v);
+    }
+    w.value = v;
+    const idx = (node.widgets || []).indexOf(w);
+    if (idx >= 0 && node.widgets_values) node.widgets_values[idx] = v;
+    if (typeof w.callback === "function") { try { w.callback.call(w, v); } catch (e) {} }
+  };
+  setW("image", value);
+  setW("mask_path", ""); // new image -> old mask no longer applies
+  // hide a stale composite overlay right away (the 2s self-heal tick cleans up too)
+  try {
+    const w = (node.widgets || []).find((x) => x.name === "fm_open");
+    const host = w && w.element && (w.element.closest(".comfy-widget") || w.element);
+    const box = host && host.parentElement;
+    if (box && box._fmCompOv) box._fmCompOv.style.display = "none";
+  } catch (e) {}
+  try { app.graph.setDirtyCanvas(true, false); } catch (e) {}
+}
+
+// Uploads a pasted/dropped image file and applies it to the node. Returns
+// false when no image file was in the list (callers can fall back).
+async function fmHandlePastedFiles(node, files) {
+  const imgs = Array.from(files || []).filter(
+    (f) => f && typeof f.type === "string" && f.type.startsWith("image/")
+  );
+  if (!imgs.length) return false;
+  const f = imgs[0];
+  try {
+    const fd = new FormData();
+    fd.append("image", f, f.name || "pasted-image.png");
+    fd.append("overwrite", "true");
+    fd.append("type", "input");
+    fd.append("subfolder", "pasted");
+    const r = await api.fetchApi("/upload/image", { method: "POST", body: fd });
+    if (!r.ok) throw new Error("upload failed: " + r.status);
+    const j = await r.json();
+    const fname = j.name || j.filename;
+    if (!fname) throw new Error("upload response missing filename");
+    const value = j.subfolder ? j.subfolder + "/" + fname : fname;
+    fmApplyNewImageToNode(node, value);
+  } catch (err) {
+    toast("FastMask", "Paste failed: " + err, "error");
+  }
+  return true;
+}
+
+// Install our own paste handlers on the node. The core right-click
+// "Paste Image" action (pasteClipboardImageToNode) calls node.pasteFile /
+// node.pasteFiles after reading the clipboard - by defining BOTH ourselves
+// the whole flow runs through our code with visible feedback, independent
+// of the built-in upload widget's internals.
+function installFastMaskPaste(node) {
+  try {
+    const prevFiles = node.pasteFiles;
+    node.pasteFile = function (file) {
+      return fmHandlePastedFiles(node, [file]);
+    };
+    node.pasteFiles = function (files) {
+      const imgs = Array.from(files || []).filter(
+        (f) => f && typeof f.type === "string" && f.type.startsWith("image/")
+      );
+      if (imgs.length) return fmHandlePastedFiles(node, imgs);
+      // no image files -> let the previous handler (if any) deal with it
+      return prevFiles ? prevFiles.call(node, files) : false;
+    };
+    // the frontend gates image-related menu items on this flag
+    try { node.previewMediaType = "image"; } catch (e) {}
+  } catch (e) { /* no-op */ }
 }
 
 function isFastMaskNode(node) {
