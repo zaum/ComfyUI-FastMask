@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.7.14";
+const FM_VERSION = "1.7.26";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -50,7 +50,7 @@ const CSS = `
 .fm-btn.fm-mode svg{flex:none}
 .fm-modelabel{font-size:13px;line-height:1}
 /* oval Paint/Erase toggle: labels on both sides, sliding knob in the middle */
-.fm-mode-toggle{display:inline-flex;align-items:center;gap:10px;user-select:none}
+.fm-mode-toggle{display:inline-flex;align-items:center;gap:10px;user-select:none;margin:0 10px}
 .fm-toggle-label{font-size:13px;color:#888;cursor:pointer;user-select:none;transition:color .15s}
 .fm-toggle-label.active{color:#fff;font-weight:600}
 .fm-toggle-track{position:relative;width:48px;height:26px;border-radius:13px;background:#3d6ea5;border:1px solid #5a8fc4;cursor:pointer;transition:background .15s,border-color .15s;flex:none}
@@ -93,15 +93,17 @@ const CSS = `
    stays crisp on small images where the preview canvas is heavily upscaled */
 .fm-hatchlayer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:1}
 .fm-wrap canvas{display:block}
-.fm-wrap canvas.fm-bw{outline:1px solid rgba(255,255,255,.28);outline-offset:-1px}
 .fm-statusbar{display:flex;gap:28px;padding:5px 12px;background:#1b1b1b;border-top:1px solid #333;font-size:12px;color:#aaa;flex-wrap:wrap}
 .fm-statusbar b{color:#8cf;font-weight:600}
 .fm-statusbar kbd{display:inline-block;padding:1px 4px;margin:0;font:600 11px/1.4 system-ui,Segoe UI,sans-serif;color:#8cf;background:#1e2a3a;border:1px solid #3a4a5a;border-radius:3px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 1px 0 rgba(0,0,0,.4)}
-.fm-hint{margin-left:auto;display:flex;gap:0;flex-wrap:wrap;align-items:center}
+.fm-hint{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .fm-hint span{white-space:nowrap}
 .fm-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16px;color:#aaa;background:#101010;z-index:2}
 .fm-hidden{display:none!important}
-.fm-colinput{position:absolute;width:0;height:0;opacity:0}
+/* the color input must have a REAL rect: the browser anchors its native
+   color-picker popup to the input's rect, and a 0x0 element makes the dialog
+   open at a bogus position */
+.fm-colinput{position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;border:none;padding:0;cursor:pointer}
 `;
 
 function injectCSS() {
@@ -215,6 +217,9 @@ function buildUI() {
   colorInput.type = "color";
   colorInput.className = "fm-colinput";
   colorInput.value = "#ff3fd8";
+  // lives INSIDE the button (transparent, full coverage): the native picker
+  // opens anchored right under the button, and clicks hit the input directly
+  hatchBtn.append(colorInput);
   // oval Paint/Erase toggle: labels on both sides, sliding knob
   const modeToggle = document.createElement("div");
   modeToggle.className = "fm-mode-toggle";
@@ -250,7 +255,7 @@ function buildUI() {
   blurSlider.max = "100";
   blurSlider.value = "0";
   blurSlider.dataset.tip = "Mask blur (drag horizontally with " + MOD + " held)";
-  gMid.append(fitBtn, brushLabel, brushSlider, blurLabel, blurSlider, fillToggle, hatchBtn, colorInput, modeToggle, showMask);
+  gMid.append(fitBtn, brushLabel, brushSlider, blurLabel, blurSlider, fillToggle, hatchBtn, modeToggle, showMask);
 
   topbar.append(gLeft, spL, gMid, spR, gRight);
 
@@ -280,20 +285,16 @@ function buildUI() {
   const statusbar = document.createElement("div");
   statusbar.className = "fm-statusbar";
   statusbar.innerHTML =
-    '<span>Brush: <b id="fmStBrush"></b></span>' +
-    '<span>Blur: <b id="fmStBlur"></b></span>' +
-    '<span>Zoom: <b id="fmStZoom"></b></span>' +
     '<span>Image: <b id="fmStSize"></b></span>' +
     '<span class="fm-hint">' +
-       '<kbd>' + MOD + '</kbd>+<kbd>up/down-drag</kbd>: brush size' +
-       '<kbd>' + MOD + '</kbd>+<kbd>left/right-drag</kbd>: blur' +
-       '<kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>: brush' +
-       '<kbd>wheel</kbd>: zoom' +
-       '<kbd>Space</kbd>/<kbd>middle button</kbd>: pan' +
-       '<kbd>right button</kbd>: erase' +
-       '<kbd>double right button</kbd>: clear all' +
-       '<kbd>X</kbd>: mode' +
-       '<kbd>' + MOD + '</kbd>+<kbd>Z</kbd>/<kbd>' + MOD + '</kbd>+<kbd>Y</kbd>: undo/redo</span>';
+       '<span><kbd>' + MOD + '</kbd>+<kbd>up/down-drag</kbd> or <kbd>' + MOD + '</kbd>+<kbd>wheel</kbd>: brush size</span>' +
+       '<span><kbd>' + MOD + '</kbd>+<kbd>left/right-drag</kbd>: blur</span>' +
+       '<span><kbd>wheel</kbd>: zoom</span>' +
+       '<span><kbd>Space</kbd>/<kbd>middle button</kbd>: pan</span>' +
+       '<span><kbd>right button</kbd>: erase</span>' +
+       '<span><kbd>double right button</kbd>: clear all</span>' +
+       '<span><kbd>X</kbd>: mode</span>' +
+       '<span><kbd>' + MOD + '</kbd>+<kbd>Z</kbd>/<kbd>' + MOD + '</kbd>+<kbd>Y</kbd>: undo/redo</span></span>';
 
   overlay.append(topbar, viewport, statusbar);
   document.body.appendChild(overlay);
@@ -317,9 +318,6 @@ function buildUI() {
     modeBtn, modeToggle, paintLabel, eraseLabel, clearAll, undoBtn, redoBtn, brushSlider, blurSlider,
     hatchBtn, swatch, colorInput, fillToggle, showMask,
     fitBtn, cancelBtn, okBtn, cursorLayer, hatchLayer,
-    stBrush: statusbar.querySelector("#fmStBrush"),
-    stBlur: statusbar.querySelector("#fmStBlur"),
-    stZoom: statusbar.querySelector("#fmStZoom"),
     stSize: statusbar.querySelector("#fmStSize"),
   };
 
@@ -544,7 +542,6 @@ function toast(title, detail, severity) {
 /* ------------------------------ view: zoom / pan ------------------------------ */
 function applyTransform() {
   ui.wrap.style.transform = "translate(" + st.view.x + "px," + st.view.y + "px) scale(" + st.view.scale + ")";
-  ui.stZoom.textContent = Math.round(st.view.scale * 100) + "%";
   // Cursor and hatch layers are drawn in screen coordinates, so both must be
   // refreshed on every pan/zoom frame. Without hatchDirty the mask stayed at
   // its previous screen position until a later unrelated redraw.
@@ -857,7 +854,7 @@ function drawHatchLayer() {
 function frame() {
   if (!st) return;
   const bw = bwMode();
-  // faint outline around the image frame in B/W mode (CSS outline, zero cost)
+  // toggle the B/W marker class (kept for potential styling hooks; no outline)
   if (st._lastBw === undefined) st._lastBw = bw;
   else if (bw !== st._lastBw) { st._lastBw = bw; st.hatchDirty = true; }
   ui.canvas.classList.toggle("fm-bw", bw);
@@ -1125,7 +1122,6 @@ function setBlur(pct, fromSizing) {
   if (v === st.blurPct) { ui.blurSlider.value = String(v); return; }
   st.blurPct = v;
   ui.blurSlider.value = String(v);
-  ui.stBlur.textContent = v + "%";
   // the whole mask display changes whenever blur changes -> repaint everything
   queueBlurRender();
   st.cursorDirty = true;
@@ -1137,9 +1133,21 @@ function setBlur(pct, fromSizing) {
 // value stops changing.
 let brushBadgeTimer = 0;
 let lastRightClickMs = 0;
-function showBrushBadge() {
+// tracks whether the native color-picker popup is currently open (Chromium
+// anchors it to the color input and closes it when the input loses focus)
+let colorPickerOpen = false;
+function showBrushBadge(atCursor) {
   if (!ui || !st) return;
   const d = Math.max(12, Math.round(st.brushFull * st.previewScale * st.view.scale));
+  // keyboard changes anchor the preview at the current cursor position; slider
+  // / drag-gesture changes keep the centered preview
+  if (atCursor && st.cursor.inside) {
+    ui.brushBadge.style.left = (st.view.x + st.cursor.x * st.view.scale) + "px";
+    ui.brushBadge.style.top = (st.view.y + st.cursor.y * st.view.scale) + "px";
+  } else {
+    ui.brushBadge.style.left = "50%";
+    ui.brushBadge.style.top = "50%";
+  }
   ui.brushBadge.style.width = d + "px";
   ui.brushBadge.style.height = d + "px";
   if (st.blurPct > 0) {
@@ -1190,9 +1198,6 @@ function updateToolbar() {
   ui.eraseLabel.classList.toggle("active", isErase);
   ui.fillToggle.classList.toggle("active", st.autoFill);
   ui.showMask.classList.toggle("active", st.maskLocked);
-  ui.stBrush.textContent = st.brushFull + " px";
-  ui.stBlur.textContent = st.blurPct + "%";
-  ui.stZoom.textContent = Math.round(st.view.scale * 100) + "%";
 }
 
 /* ------------------------------ UI events ------------------------------ */
@@ -1211,7 +1216,19 @@ function wireUI() {
   // and drop the centered brush preview immediately
   ui.brushSlider.addEventListener("change", () => { refreshCanvas(); hideBrushBadge(); });
   ui.blurSlider.addEventListener("change", () => { refreshCanvas(); hideBrushBadge(); });
-  ui.hatchBtn.addEventListener("click", () => ui.colorInput.click());
+  // native picker toggle: the transparent color input covers the whole button,
+  // so a click opens the picker directly. An outside mousedown CLOSES the
+  // popup first and the same press would immediately reopen it - so when the
+  // picker is already open we swallow the press and blur() the input instead,
+  // which dismisses it. Clicking the button (or pressing "C") again toggles.
+  ui.colorInput.addEventListener("mousedown", (e) => {
+    if (!colorPickerOpen) { colorPickerOpen = true; return; }
+    e.preventDefault();
+    e.stopPropagation();
+    ui.colorInput.blur();
+    colorPickerOpen = false;
+  });
+  ui.colorInput.addEventListener("change", () => { colorPickerOpen = false; });
   ui.colorInput.addEventListener("input", (e) => {
     if (!st) return;
     st.hatchColor = e.target.value;
@@ -1304,6 +1321,9 @@ function wireUI() {
         // vertical jitter is ignored -> only the horizontal component matters
         setBlur(s.blur + (e.clientX - s.x) * Math.max(1, st.fullH / 1600), true);
       }
+      // live preview anchored at the brush position (the cursor stays fixed
+      // while resizing, same as with the keyboard shortcuts)
+      showBrushBadge(true);
       // throttle a full repaint while sizing — dirty-rect-only updates can leave
       // thin GPU seams that otherwise only disappear when the brush repaints.
       if (!st._sizingRefresh) {
@@ -1351,6 +1371,7 @@ function wireUI() {
       renderAll();
       requestAnimationFrame(() => { if (st) renderAll(); });
       setTimeout(() => { if (st) renderAll(); }, 120);
+      hideBrushBadge();
       return;
     }
     if (st.panning) { st.panning = null; v.classList.remove("fm-panning"); return; }
@@ -1378,6 +1399,7 @@ function wireUI() {
     const mod = e.ctrlKey || e.metaKey;
     if (mod) {
       setBrush(st.brushFull * (e.deltaY < 0 ? 1.08 : 1 / 1.08), true);
+      showBrushBadge(true); // live preview at the cursor position, auto-hides
       return;
     }
     zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15);
@@ -1396,7 +1418,13 @@ function onKey(e, down) {
   const mod = e.ctrlKey || e.metaKey;
 
   if (down && k === "Enter") { e.preventDefault(); saveAndClose(); return; }
-  if (down && k === "Escape") { e.preventDefault(); closeEditor(); return; }
+  if (down && k === "Escape") {
+    e.preventDefault();
+    // Esc closes the color picker first (if open), then the editor
+    if (colorPickerOpen) { colorPickerOpen = false; ui.colorInput.blur(); return; }
+    closeEditor();
+    return;
+  }
 
   if (mod && (k === "z" || k === "Z")) {
     e.preventDefault();
@@ -1449,13 +1477,17 @@ function onKey(e, down) {
       toggleFill();
       break;
     case "c":
-      ui.colorInput.click();
+      // toggle the native picker: second press dismisses it via blur()
+      if (colorPickerOpen) { colorPickerOpen = false; ui.colorInput.blur(); }
+      else { colorPickerOpen = true; ui.colorInput.click(); }
       break;
     case "[":
       setBrush(st.brushFull * 0.9, true);
+      showBrushBadge(true); // preview follows the cursor, not the canvas center
       break;
     case "]":
       setBrush(st.brushFull * 1.1, true);
+      showBrushBadge(true);
       break;
     case "+":
     case "=":
@@ -1632,10 +1664,10 @@ function makeOpenButtonEl(node) {
   el.setAttribute("data-fastmask-open", "1"); // never let hideNativeMaskButtons() hide our own button
   el.style.cssText =
     "display:block;width:100%;height:32px;min-height:32px;max-height:32px;box-sizing:border-box;flex:none;" +
-    "background:#2563eb;color:#fff;border:1px solid #1d4ed8;border-radius:6px;" +
+    "background:#2b2b2b;color:#fff;border:1px solid #4a4a4a;border-radius:6px;" +
     "cursor:pointer;font-size:13px;font-weight:600;padding:0 10px;font-family:inherit;line-height:30px;text-align:center;pointer-events:auto";
-  el.addEventListener("mouseenter", () => { el.style.background = "#1d4ed8"; });
-  el.addEventListener("mouseleave", () => { el.style.background = "#2563eb"; });
+  el.addEventListener("mouseenter", () => { el.style.background = "#3a3a3a"; });
+  el.addEventListener("mouseleave", () => { el.style.background = "#2b2b2b"; });
   el.addEventListener("pointerdown", (e) => e.stopPropagation()); // do not drag the node
   el.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); fmEditorClick(node); });
   return el;
