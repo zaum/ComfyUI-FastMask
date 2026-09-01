@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.7.4";
+const FM_VERSION = "1.7.10";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -545,8 +545,11 @@ function toast(title, detail, severity) {
 function applyTransform() {
   ui.wrap.style.transform = "translate(" + st.view.x + "px," + st.view.y + "px) scale(" + st.view.scale + ")";
   ui.stZoom.textContent = Math.round(st.view.scale * 100) + "%";
-  // the cursor overlay is drawn in screen coords -> reposition on any view change
+  // Cursor and hatch layers are drawn in screen coordinates, so both must be
+  // refreshed on every pan/zoom frame. Without hatchDirty the mask stayed at
+  // its previous screen position until a later unrelated redraw.
   st.cursorDirty = true;
+  st.hatchDirty = true;
 }
 
 function fitView() {
@@ -1634,18 +1637,88 @@ function alignPreviewTop(node) {
     }
     const pbox = preview.closest(".comfy-widget") || preview.parentElement;
     if (pbox) {
-      pbox.style.setProperty("margin-top", "6px", "important");
+      // Keep the preview at its intrinsic aspect-ratio height.  A fixed or
+      // max height here makes tall source images get clipped by the widget.
+      pbox.style.setProperty("margin-top", "0", "important");
       pbox.style.setProperty("padding-top", "0", "important");
       pbox.style.setProperty("top", "auto", "important");
-      // flex-only: align the preview to the top if any container is a flex column
-      pbox.style.setProperty("align-self", "flex-start", "important");
+      pbox.style.setProperty("width", "100%", "important");
+      pbox.style.setProperty("height", "auto", "important");
+      pbox.style.setProperty("max-height", "none", "important");
+      pbox.style.setProperty("overflow", "visible", "important");
+      // flex-only: stretch horizontally and place the image at the top.
+      pbox.style.setProperty("align-self", "stretch", "important");
+      // The native preview image itself ignores pointer events, so listen on
+      // its panel. A click opens FastMask while pointerdown still prevents the
+      // click from starting a node drag.
+      if (!pbox._fmOpenEditorHook) {
+        pbox._fmOpenEditorHook = true;
+        pbox.style.setProperty("cursor", "pointer", "important");
+        pbox.addEventListener("pointerdown", (e) => e.stopPropagation());
+        pbox.addEventListener("click", (e) => {
+          if (e.target && e.target.closest && e.target.closest("button, a, input")) return;
+          e.preventDefault();
+          e.stopPropagation();
+          fmEditorClick(node);
+        });
+      }
+    }
+    // ComfyUI's current DOM preview uses this flex column.  Its default
+    // justify-center is what places a short, aspect-ratio-correct image in
+    // the middle of a resized node.
+    const imageFrame = preview.closest(".image-preview");
+    if (imageFrame) {
+      imageFrame.style.setProperty("justify-content", "flex-start", "important");
+      imageFrame.style.setProperty("align-items", "stretch", "important");
+      imageFrame.style.setProperty("margin-top", "0", "important");
+      imageFrame.style.setProperty("padding-top", "0", "important");
+      // Do not let the native preview frame consume all remaining node height.
+      // Its height is set to the image ratio below, so any extra height remains
+      // below the preview instead of turning into a centered image area.
+      imageFrame.style.setProperty("flex", "0 0 auto", "important");
+      imageFrame.style.setProperty("min-height", "0", "important");
+      imageFrame.style.setProperty("height", "auto", "important");
     }
     // the image fills the FULL WIDTH of the node; height follows automatically
     // so the aspect ratio is always preserved (no distortion)
     if (preview.tagName === "IMG") {
       preview.style.setProperty("width", "100%", "important");
       preview.style.setProperty("height", "auto", "important");
+      preview.style.setProperty("max-height", "none", "important");
+      preview.style.setProperty("display", "block", "important");
       preview.style.setProperty("object-fit", "contain", "important");
+      preview.style.setProperty("object-position", "left top", "important");
+      // The native preview has `absolute inset-0`.  Clear its bottom edge so
+      // height:auto uses the image's aspect ratio and anchors it at the top.
+      preview.style.setProperty("top", "0", "important");
+      preview.style.setProperty("right", "auto", "important");
+      preview.style.setProperty("bottom", "auto", "important");
+      preview.style.setProperty("left", "0", "important");
+
+      // The native image itself is absolute, so its parent has no intrinsic
+      // height. Explicitly give that panel the natural, full-width image
+      // height. This removes the flex area that used to vertically center the
+      // preview and prevents portrait images from being clipped at the bottom.
+      const naturalW = preview.naturalWidth || preview.width || 0;
+      const naturalH = preview.naturalHeight || preview.height || 0;
+      const panelW = pbox ? pbox.clientWidth : 0;
+      if (pbox && naturalW > 0 && naturalH > 0 && panelW > 0) {
+        const imageH = Math.ceil(panelW * naturalH / naturalW);
+        pbox.style.setProperty("flex", "0 0 " + imageH + "px", "important");
+        pbox.style.setProperty("height", imageH + "px", "important");
+        pbox.style.setProperty("min-height", imageH + "px", "important");
+      }
+      // A late image load and a horizontal node resize both change the target
+      // height. Recalculate from the current rendered width in either case.
+      if (!preview._fmTopAlignLoadHook) {
+        preview._fmTopAlignLoadHook = true;
+        preview.addEventListener("load", () => alignPreviewTop(node));
+      }
+      if (!preview._fmTopAlignRO && typeof ResizeObserver === "function") {
+        const ro = new ResizeObserver(() => alignPreviewTop(node));
+        ro.observe(preview);
+        preview._fmTopAlignRO = ro;
+      }
     }
     // top-align every widget container WITHOUT touching display/flex of children.
     // These properties are no-ops on static blocks and only take effect in the
@@ -1797,8 +1870,13 @@ function enableNodeMaskOverlay(node) {
           const s = fit === "cover" ? Math.max(pw / sw, ph / sh) : Math.min(pw / sw, ph / sh);
           rw = Math.min(pw, sw * s);
           rh = Math.min(ph, sh * s);
-          left += (pw - rw) / 2;
-          top += (ph - rh) / 2;
+          // The native image is explicitly anchored at left/top.  The mask
+          // composite must use the exact same origin; centering it here made
+          // the visible preview look vertically centered after node resize.
+          if (fit === "cover") {
+            left += (pw - rw) / 2;
+            top += (ph - rh) / 2;
+          }
         }
       }
       ov.style.left = left + "px";
@@ -1807,6 +1885,7 @@ function enableNodeMaskOverlay(node) {
       ov.style.height = rh + "px";
       // overlay rect == image aspect exactly, so "fill" here keeps 1:1 scale
       ov.style.objectFit = "fill";
+      ov.style.objectPosition = "left top";
     };
     const refresh = (force) => {
       const mp = (node.widgets || []).find((x) => x.name === "mask_path");
