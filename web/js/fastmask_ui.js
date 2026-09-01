@@ -740,10 +740,15 @@ function drawHatchLayer() {
   const vw = g.canvas.width, vh = g.canvas.height; // device px
   const bp = st.blurPct > 0 ? blurRadiusPx() : 0;  // canvas px
   // ---- keep a SCREEN-RES blurred copy of the mask (st.msC) ----
-  // Rebuilt fully on zoom / resize / blur-change; while painting only the
-  // dirty rects are re-blurred, so strokes never re-blur the whole screen.
+  // Rebuilt fully on zoom / resize / blur-change / pan; while painting only
+  // the dirty rects are re-blurred, so strokes never re-blur the whole screen.
+  // The pan case matters: msC has the mask baked in at SCREEN coordinates, so
+  // a translate-only view change (middle-button drag, or Fit at the current
+  // scale) must trigger a rebuild too - otherwise the hatch stayed at the
+  // previous screen position until an unrelated redraw.
   if (!st.msC || st.msW !== vw || st.msH !== vh ||
-      Math.abs(st.msScale - s * dpr) > 1e-4 || Math.abs(st.msBlur - bp) > 0.5) {
+      Math.abs(st.msScale - s * dpr) > 1e-4 || Math.abs(st.msBlur - bp) > 0.5 ||
+      st.msVX !== st.view.x || st.msVY !== st.view.y) {
     if (!st.msC) { st.msC = document.createElement("canvas"); st.msCtx = st.msC.getContext("2d"); }
     st.msC.width = vw; st.msC.height = vh;
     st.msW = vw; st.msH = vh;
@@ -753,6 +758,7 @@ function drawHatchLayer() {
     m.drawImage(st.maskCanvas, st.view.x, st.view.y, st.pw * s, st.ph * s);
     m.filter = "none";
     st.msScale = s * dpr; st.msBlur = bp; st.msRects = null;
+    st.msVX = st.view.x; st.msVY = st.view.y;
   } else if (st.msRects && st.msRects.length) {
     const m = st.msCtx;
     m.setTransform(dpr, 0, 0, dpr, 0, 0);
