@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.7.10";
+const FM_VERSION = "1.7.14";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -728,6 +728,31 @@ function sizeHatchLayer() {
   if (lay.width !== w || lay.height !== h) { lay.width = w; lay.height = h; }
 }
 
+// Redraw the (optionally blurred) mask inside one VIEWPORT region (CSS px) of
+// the msC screen buffer: clear an expanded area so blur halos stay correct,
+// then blit the matching part of the full-res mask canvas.
+function msRedrawRegion(m, rx, ry, rw, rh, s, bp, dpr, vw, vh, bx, by) {
+  // bx/by: view-space origin the TARGET BUFFER represents. Defaults to the
+  // live view; the pan-shifted msC buffer passes its own (st.msVX) origin so
+  // the redrawn strips stay consistent with the shifted content.
+  if (bx === undefined) { bx = st.view.x; by = st.view.y; }
+  const m2 = Math.ceil(bp * s * 2) + 6; // screen-px margin for the blur halo
+  const ex = Math.max(0, rx - m2), ey = Math.max(0, ry - m2);
+  const ex2 = Math.min(vw / dpr, rx + rw + m2), ey2 = Math.min(vh / dpr, ry + rh + m2);
+  if (ex2 <= ex || ey2 <= ey) return;
+  m.clearRect(ex, ey, ex2 - ex, ey2 - ey);
+  const sx0 = Math.max(0, Math.floor((ex - bx) / s));
+  const sy0 = Math.max(0, Math.floor((ey - by) / s));
+  const sx1 = Math.min(st.pw, Math.ceil((ex2 - bx) / s));
+  const sy1 = Math.min(st.ph, Math.ceil((ey2 - by) / s));
+  if (sx1 > sx0 && sy1 > sy0) {
+    if (bp > 0) m.filter = "blur(" + (bp * s).toFixed(2) + "px)";
+    m.drawImage(st.maskCanvas, sx0, sy0, sx1 - sx0, sy1 - sy0,
+                bx + sx0 * s, by + sy0 * s, (sx1 - sx0) * s, (sy1 - sy0) * s);
+    m.filter = "none";
+  }
+}
+
 function drawHatchLayer() {
   const g = st.hatchCtx;
   if (!g) return;
@@ -740,15 +765,18 @@ function drawHatchLayer() {
   const vw = g.canvas.width, vh = g.canvas.height; // device px
   const bp = st.blurPct > 0 ? blurRadiusPx() : 0;  // canvas px
   // ---- keep a SCREEN-RES blurred copy of the mask (st.msC) ----
-  // Rebuilt fully on zoom / resize / blur-change / pan; while painting only
-  // the dirty rects are re-blurred, so strokes never re-blur the whole screen.
-  // The pan case matters: msC has the mask baked in at SCREEN coordinates, so
-  // a translate-only view change (middle-button drag, or Fit at the current
-  // scale) must trigger a rebuild too - otherwise the hatch stayed at the
-  // previous screen position until an unrelated redraw.
-  if (!st.msC || st.msW !== vw || st.msH !== vh ||
-      Math.abs(st.msScale - s * dpr) > 1e-4 || Math.abs(st.msBlur - bp) > 0.5 ||
-      st.msVX !== st.view.x || st.msVY !== st.view.y) {
+  // Fully rebuilt only on GEOMETRY changes (zoom / resize / blur). msC has the
+  // mask baked in at SCREEN coordinates, so a translate-only view change (pan,
+  // or Fit at the current scale) must be reflected too - but a pan only SHIFTS
+  // the already-blurred buffer and re-blurs the thin strips newly revealed at
+  // the edges (a full re-blur every frame made dragging noticeably slower).
+  // While painting, only the dirty rects are re-blurred, so strokes never
+  // re-blur the whole screen.
+  const geometryChanged = !st.msC || st.msW !== vw || st.msH !== vh ||
+      Math.abs(st.msScale - s * dpr) > 1e-4 || Math.abs(st.msBlur - bp) > 0.5;
+  const moved = Math.round((st.view.x - st.msVX) * dpr) !== 0 ||
+      Math.round((st.view.y - st.msVY) * dpr) !== 0;
+  if (geometryChanged) {
     if (!st.msC) { st.msC = document.createElement("canvas"); st.msCtx = st.msC.getContext("2d"); }
     st.msC.width = vw; st.msC.height = vh;
     st.msW = vw; st.msH = vh;
@@ -759,33 +787,59 @@ function drawHatchLayer() {
     m.filter = "none";
     st.msScale = s * dpr; st.msBlur = bp; st.msRects = null;
     st.msVX = st.view.x; st.msVY = st.view.y;
+  } else if (moved) {
+    // pan: shift the existing blurred buffer, then refresh only the strips
+    // revealed at the trailing edges (cheap - no full-screen re-blur)
+    const m = st.msCtx;
+    const dx = Math.round((st.view.x - st.msVX) * dpr);
+    const dy = Math.round((st.view.y - st.msVY) * dpr);
+    // what the buffer actually represents after the integer device-px shift
+    // (EXACT += : the buffer keeps representing the same mask content, so no
+    // rounding residual can accumulate across frames - the sub-pixel residue
+    // is absorbed by the composite blit offset instead)
+    st.msVX += dx / dpr;
+    st.msVY += dy / dpr;
+    if (dx || dy) {
+      // double-buffered shift: draw the old buffer into a scratch canvas
+      // (a self-drawImage with "copy" is unreliable in Chromium - it can
+      // clear before snapshotting - so never copy a canvas onto itself)
+      if (!st.msB) { st.msB = document.createElement("canvas"); st.msBCtx = st.msB.getContext("2d"); }
+      if (st.msB.width !== vw || st.msB.height !== vh) { st.msB.width = vw; st.msB.height = vh; }
+      const bc = st.msBCtx;
+      bc.setTransform(1, 0, 0, 1, 0, 0);
+      bc.clearRect(0, 0, vw, vh);
+      bc.drawImage(st.msC, dx, dy);
+      // swap: msC now holds the shifted content, msB becomes the scratch
+      st.msB = st.msC; st.msBCtx = st.msCtx;
+      st.msC = bc.canvas; st.msCtx = bc;
+      const m = st.msCtx;
+      // vacate the strips the content moved away from
+      if (dx > 0) m.clearRect(0, 0, dx, vh);
+      else if (dx < 0) m.clearRect(vw + dx, 0, -dx, vh);
+      if (dy > 0) m.clearRect(0, 0, vw, dy);
+      else if (dy < 0) m.clearRect(0, vh + dy, vw, -dy);
+      // redraw mask in the revealed strips - in BUFFER space, using the
+      // buffer's own origin (st.msVX), NOT the live view, or the strips
+      // would land offset by the pan delta and the buffer would re-shift
+      // every frame (exponential drift)
+      m.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (dx > 0) msRedrawRegion(m, 0, 0, dx / dpr, vh / dpr, s, bp, dpr, vw, vh, st.msVX, st.msVY);
+      else if (dx < 0) msRedrawRegion(m, (vw + dx) / dpr, 0, -dx / dpr, vh / dpr, s, bp, dpr, vw, vh, st.msVX, st.msVY);
+      if (dy > 0) msRedrawRegion(m, 0, 0, vw / dpr, dy / dpr, s, bp, dpr, vw, vh, st.msVX, st.msVY);
+      else if (dy < 0) msRedrawRegion(m, 0, (vh + dy) / dpr, vw / dpr, -dy / dpr, s, bp, dpr, vw, vh, st.msVX, st.msVY);
+    }
   } else if (st.msRects && st.msRects.length) {
     const m = st.msCtx;
     m.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const m2 = Math.ceil(bp * s * 2) + 6; // screen-px margin for the blur halo
     for (const r of st.msRects) {
-      const dx = st.view.x + r.x * s, dy = st.view.y + r.y * s;
-      const dw = r.w * s, dh = r.h * s;
-      const ex = Math.max(0, dx - m2), ey = Math.max(0, dy - m2);
-      const ex2 = Math.min(vw / dpr, dx + dw + m2), ey2 = Math.min(vh / dpr, dy + dh + m2);
-      if (ex2 <= ex || ey2 <= ey) continue;
-      // clear + redraw an expanded region: blur near the borders stays correct
-      m.clearRect(ex, ey, ex2 - ex, ey2 - ey);
-      const sx0 = Math.max(0, Math.floor((ex - st.view.x) / s));
-      const sy0 = Math.max(0, Math.floor((ey - st.view.y) / s));
-      const sx1 = Math.min(st.pw, Math.ceil((ex2 - st.view.x) / s));
-      const sy1 = Math.min(st.ph, Math.ceil((ey2 - st.view.y) / s));
-      if (sx1 > sx0 && sy1 > sy0) {
-        if (bp > 0) m.filter = "blur(" + (bp * s).toFixed(2) + "px)";
-        m.drawImage(st.maskCanvas, sx0, sy0, sx1 - sx0, sy1 - sy0,
-                    st.view.x + sx0 * s, st.view.y + sy0 * s, (sx1 - sx0) * s, (sy1 - sy0) * s);
-        m.filter = "none";
-      }
+      msRedrawRegion(m, st.msVX + r.x * s, st.msVY + r.y * s, r.w * s, r.h * s, s, bp, dpr, vw, vh, st.msVX, st.msVY);
     }
     st.msRects = null;
   }
   // ---- composite: mask buffer + hatch pattern (two cheap GPU ops) ----
-  g.drawImage(st.msC, 0, 0);
+  // blit with the sub-pixel (< 0.5 device px) pan residual so the buffer
+  // lands exactly where the view is without ever re-blurring on pan
+  g.drawImage(st.msC, (st.view.x - st.msVX) * dpr, (st.view.y - st.msVY) * dpr);
   g.globalCompositeOperation = "source-in";
   const pat = st.hatchPattern;
   if (pat) {
