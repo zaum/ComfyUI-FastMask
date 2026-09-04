@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.8.2";
+const FM_VERSION = "1.9.13";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -97,6 +97,16 @@ const CSS = `
 .fm-hint span{white-space:nowrap}
 .fm-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16px;color:#aaa;background:#101010;z-index:2}
 .fm-hidden{display:none!important}
+/* node preview hover paste button: it lives INSIDE the native .actions overlay
+   bar, so show/hide timing, size and style are inherited from the native
+   buttons exactly. Only the extra gap and the busy state are ours. */
+.fm-preview-box{position:relative}
+.fm-preview-paste.fm-extra-gap{margin-right:4px}
+.fm-preview-paste.fm-busy{opacity:.5;cursor:wait}
+/* fallback floating button (only when the native .actions bar is missing):
+   instant show/hide like the native bar (no transition delay) */
+.fm-preview-paste.fm-fallback{position:absolute;top:8px;z-index:20;opacity:0}
+.fm-preview-box:hover .fm-preview-paste.fm-fallback,.fm-preview-paste.fm-fallback:focus-visible,.fm-preview-paste.fm-fallback.fm-busy{opacity:1}
 /* the color input must have a REAL rect */
 .fm-colinput{position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;border:none;padding:0;cursor:pointer}
 `;
@@ -152,6 +162,17 @@ function iconErase() {
 function iconFit() {
   return svgIcon('<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>');
 }
+// Paste icon for the node preview hover button: the EXACT same pictogram as
+// the right-click "Paste Image" menu action (lucide--clipboard-paste), drawn
+// inverse through the inherited native button colors (text-base-background on
+// bg-base-foreground, same as the native download button next to it).
+function iconPaste() {
+  return '<i class="icon-[lucide--clipboard-paste] size-4" aria-hidden="true"></i>';
+}
+// Fallback copy of the native preview action button classes (frontend 1.49.6,
+// h-8 = 32px tall, 16px icon). Used only when the native download button has
+// not rendered yet; otherwise the live className is copied from it.
+const FM_NATIVE_BTN_CLS = "flex h-8 min-h-8 cursor-pointer items-center justify-center rounded-lg border-0 bg-base-foreground p-2 text-base-background shadow-interface transition-colors duration-200 hover:bg-base-foreground/90";
 
 /* ------------------------------ DOM construction ------------------------------ */
 function buildUI() {
@@ -1881,6 +1902,7 @@ function enableNodeMaskOverlay(node) {
           }
           if (!(mp && mp.value)) return;
           refresh(false);
+          try { raisePreviewActions(box); } catch (e) {}
         } catch (e) {}
       }, 2000);
     }
@@ -1900,29 +1922,39 @@ function enableNodeMaskOverlay(node) {
       preview.addEventListener("load", reposition);
     }
     // re-wire when the preview element itself is replaced (new image loaded).
-    // Mutations caused by our own overlay (fm-node-tint img) are ignored.
+    // Mutations caused by our own overlay (fm-node-tint img) or our own paste
+    // button (fm-preview-paste) are ignored.
     if (!box._fmCompObs) {
       const mo = new MutationObserver((muts) => {
         for (const m of muts) {
           if (m.type !== "childList") continue;
-          for (const an of m.addedNodes) if (an && an.classList && an.classList.contains("fm-node-tint")) return;
-          for (const rn of m.removedNodes) if (rn && rn.classList && rn.classList.contains("fm-node-tint")) return;
+          for (const an of m.addedNodes) if (an && an.classList && (an.classList.contains("fm-node-tint") || an.classList.contains("fm-preview-paste"))) { try { enablePreviewPasteButton(node); } catch (e) {} return; }
+          for (const rn of m.removedNodes) if (rn && rn.classList && (rn.classList.contains("fm-node-tint") || rn.classList.contains("fm-preview-paste"))) { try { enablePreviewPasteButton(node); } catch (e) {} return; }
         }
         const np = findNodePreview(nodeEl);
         if (np && np !== preview) {
           box._fmCompWired = false;
           if (box._fmCompRO) { try { box._fmCompRO.disconnect(); } catch (e) {} box._fmCompRO = null; }
           enableNodeMaskOverlay(node);
+          enablePreviewPasteButton(node);
+        } else {
+          // same preview, but our paste button may have been dropped by a
+          // frontend re-render - re-attach it without touching the overlay
+          try { enablePreviewPasteButton(node); } catch (e) {}
         }
       });
       mo.observe(box, { childList: true, subtree: true });
       box._fmCompObs = mo;
     }
     refresh(false);
+    try { enablePreviewPasteButton(node); } catch (e) {}
   } catch (e) { /* no-op */ }
 }
 function addOpenButton(node) {
   if (!node) return;
+  // our preview-button CSS must exist on the page even if the editor was
+  // never opened (buildUI/injectCSS only runs on editor open)
+  try { injectCSS(); } catch (e) {}
   stripStaleWidgets(node);
   // our own paste handlers (Ctrl+V and the right-click "Paste Image" menu
   // action both route through node.pasteFile / node.pasteFiles)
@@ -1933,11 +1965,11 @@ function addOpenButton(node) {
   // stale oval button can appear a tick later. Our own fm_open/fm_version are
   // preserved by stripStaleWidgets.
   try {
-    requestAnimationFrame(() => { stripStaleWidgets(node); positionBottom(node); enableNodeMaskOverlay(node); });
-    setTimeout(() => { stripStaleWidgets(node); positionBottom(node); enableNodeMaskOverlay(node); }, 0);
-    setTimeout(() => { stripStaleWidgets(node); positionBottom(node); enableNodeMaskOverlay(node); }, 300);
-    setTimeout(() => { positionBottom(node); enableNodeMaskOverlay(node); }, 900);
-    setTimeout(() => { positionBottom(node); }, 1800);
+    requestAnimationFrame(() => { stripStaleWidgets(node); positionBottom(node); enableNodeMaskOverlay(node); enablePreviewPasteButton(node); });
+    setTimeout(() => { stripStaleWidgets(node); positionBottom(node); enableNodeMaskOverlay(node); enablePreviewPasteButton(node); }, 0);
+    setTimeout(() => { stripStaleWidgets(node); positionBottom(node); enableNodeMaskOverlay(node); enablePreviewPasteButton(node); }, 300);
+    setTimeout(() => { positionBottom(node); enableNodeMaskOverlay(node); enablePreviewPasteButton(node); }, 900);
+    setTimeout(() => { positionBottom(node); enablePreviewPasteButton(node); }, 1800);
   } catch (e) { /* no-op */ }
 
   // PROVEN PATTERN - exactly how one-node-flux-2-klein builds its working
@@ -1982,6 +2014,8 @@ function addOpenButton(node) {
 // image means the old mask no longer applies). Self-contained so it works
 // even when the built-in upload-widget machinery skips its own steps.
 function fmApplyNewImageToNode(node, value) {
+  const imgW0 = (node.widgets || []).find((x) => x.name === "image");
+  const oldVal = imgW0 ? imgW0.value : undefined;
   const setW = (name, v) => {
     const w = (node.widgets || []).find((x) => x.name === name);
     if (!w) return;
@@ -1998,18 +2032,56 @@ function fmApplyNewImageToNode(node, value) {
   };
   setW("image", value);
   setW("mask_path", ""); // new image -> old mask no longer applies
-  // hide a stale composite overlay right away (the 2s self-heal tick cleans up too)
+  // Notify the graph layer exactly like the built-in upload flow does
+  // (onUploadComplete -> onWidgetChanged). Without this the dropdown DOM and
+  // the queue validation never learn about the new value, so a pasted image
+  // is treated as "no file selected" at Queue time.
+  try {
+    if (typeof node.onWidgetChanged === "function") {
+      const imgW = (node.widgets || []).find((x) => x.name === "image");
+      node.onWidgetChanged("image", imgW ? imgW.value : value, oldVal, imgW || null);
+    }
+  } catch (e) { /* no-op */ }
+  fmShowPastedPreview(node, value);
+  try { app.graph.setDirtyCanvas(true, false); } catch (e) {}
+}
+
+// After pasting a new image: hide the stale mask composite overlay on the
+// REAL preview box and point the node preview at the newly pasted file right
+// away, so the pasted image shows immediately (no Queue needed). Without
+// this the old composite kept covering the preview after a paste.
+function fmShowPastedPreview(node, value) {
   try {
     const w = (node.widgets || []).find((x) => x.name === "fm_open");
-    const host = w && w.element && (w.element.closest(".comfy-widget") || w.element);
-    const box = host && host.parentElement;
-    if (box && box._fmCompOv) box._fmCompOv.style.display = "none";
-  } catch (e) {}
-  try { app.graph.setDirtyCanvas(true, false); } catch (e) {}
+    const nodeEl = (w && w.element && (w.element.closest("[data-node-id]") || document.querySelector('[data-node-id="' + node.id + '"]')))
+      || document.querySelector('[data-node-id="' + node.id + '"]');
+    if (!nodeEl) return;
+    const preview = findNodePreview(nodeEl);
+    const box = preview && preview.parentElement;
+    if (box && box._fmCompOv) {
+      box._fmCompOv.style.display = "none";
+      box._fmCompOv._fmFailed = null;
+    }
+    if (preview && preview.tagName === "IMG" && value) {
+      const seg = String(value).split("/");
+      const fname = seg.pop();
+      const sub = seg.join("/");
+      preview.src = api.apiURL("/view?" + new URLSearchParams({
+        filename: fname,
+        subfolder: sub,
+        type: "input",
+      }));
+    }
+  } catch (e) { /* never break paste over cosmetics */ }
 }
 
 // Uploads a pasted/dropped image file and applies it to the node. Returns
 // false when no image file was in the list (callers can fall back).
+// NOTE: intentionally does NOT call app.refreshComboInNodes() (it reloads
+// ALL node definitions and takes seconds). The native paste flow does not
+// call it either: fmApplyNewImageToNode pushes the value into the widget's
+// combo options locally, and because the upload goes to the INPUT ROOT the
+// file appears in the server combo list at the next refresh anyway.
 async function fmHandlePastedFiles(node, files) {
   const imgs = Array.from(files || []).filter(
     (f) => f && typeof f.type === "string" && f.type.startsWith("image/")
@@ -2017,17 +2089,27 @@ async function fmHandlePastedFiles(node, files) {
   if (!imgs.length) return false;
   const f = imgs[0];
   try {
+    // Upload to the INPUT ROOT with overwrite=false, exactly like the native
+    // right-click "Paste Image" flow: the server then dedupes the name
+    // ("pasted-image (17).png" etc.), and because the file sits in the root
+    // it IS part of the combo list the server returns for INPUT_TYPES. This
+    // is what keeps the value valid after F5 / node-def reload and keeps the
+    // frontend's missing-media scan ("Missing Inputs" panel) happy. Uploading
+    // into a subfolder (e.g. "pasted/") would produce a value that is never
+    // in the root-only combo list -> the node goes red at Queue time.
     const fd = new FormData();
     fd.append("image", f, f.name || "pasted-image.png");
-    fd.append("overwrite", "true");
+    fd.append("overwrite", "false");
     fd.append("type", "input");
-    fd.append("subfolder", "pasted");
     const r = await api.fetchApi("/upload/image", { method: "POST", body: fd });
     if (!r.ok) throw new Error("upload failed: " + r.status);
     const j = await r.json();
     const fname = j.name || j.filename;
     if (!fname) throw new Error("upload response missing filename");
     const value = j.subfolder ? j.subfolder + "/" + fname : fname;
+    // Apply immediately: set the widget value + push it into the combo
+    // options locally (native addToComboValues parity). No server combo
+    // refresh here — that is what made paste feel slow.
     fmApplyNewImageToNode(node, value);
   } catch (err) {
     toast("FastMask", "Paste failed: " + err, "error");
@@ -2057,6 +2139,193 @@ function installFastMaskPaste(node) {
     // the frontend gates image-related menu items on this flag
     try { node.previewMediaType = "image"; } catch (e) {}
   } catch (e) { /* no-op */ }
+}
+
+// Reads the image currently in the OS clipboard and applies it to the node
+// through the same upload path as the right-click "Paste Image" menu action
+// (node.pasteFile / fmHandlePastedFiles).
+async function fmPasteFromClipboard(node, btnEl) {
+  if (btnEl) btnEl.classList.add("fm-busy");
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.read !== "function") {
+      toast("FastMask", "Clipboard read is not supported in this browser.", "error");
+      return;
+    }
+    let items = [];
+    try {
+      items = await navigator.clipboard.read();
+    } catch (err) {
+      toast("FastMask", "Clipboard access denied - click the page once and try again.", "warn");
+      return;
+    }
+    for (const item of items || []) {
+      const imgType = (item.types || []).find((t) => typeof t === "string" && t.indexOf("image/") === 0);
+      if (!imgType) continue;
+      let blob = null;
+      try { blob = await item.getType(imgType); } catch (e) { continue; }
+      if (!blob) continue;
+      const ext = imgType.indexOf("jpeg") !== -1 || imgType.indexOf("jpg") !== -1 ? "jpg"
+        : imgType.indexOf("webp") !== -1 ? "webp"
+        : imgType.indexOf("gif") !== -1 ? "gif" : "png";
+      const file = new File([blob], "pasted-image." + ext, { type: blob.type || imgType });
+      const ok = await fmHandlePastedFiles(node, [file]);
+      if (ok) return;
+    }
+    toast("FastMask", "No image found in the clipboard.", "warn");
+  } catch (err) {
+    toast("FastMask", "Paste failed: " + (err && err.message ? err.message : err), "error");
+  } finally {
+    if (btnEl) btnEl.classList.remove("fm-busy");
+  }
+}
+
+function findNativeDownloadBtn(box) {
+  try {
+    const els = box.querySelectorAll("button, a");
+    for (const b of els) {
+      if (!b || b === box._fmPasteBtn) continue;
+      if (b.classList && (b.classList.contains("fm-preview-paste") || b.classList.contains("fm-node-tint"))) continue;
+      // most precise: the native download action renders lucide--download
+      const html = (b.innerHTML || "").toLowerCase();
+      if (html.indexOf("lucide--download") !== -1) return b;
+      const lab = (((b.getAttribute && b.getAttribute("aria-label")) || "") + " " +
+        ((b.getAttribute && b.getAttribute("title")) || "")).toLowerCase();
+      if (lab.indexOf("download") !== -1) return b;
+    }
+  } catch (e) { /* no-op */ }
+  return null;
+}
+
+// Gap between the paste and download icons: 8px total (native flex gap-1 =
+// 4px plus our 4px extra margin; same value drives the fallback placement).
+const FM_PASTE_GAP = 8;
+
+// Fallback placement (no native .actions bar inside the preview box): park
+// the clone exactly LEFT of the native download button using measured layout
+// offsets, so the gap is exact even outside the native flex bar.
+function placeFallbackBtn(box, b, native) {
+  try {
+    if (native && (native === box || (box.contains && box.contains(native)))) {
+      let left = 0, top = 0, n = native;
+      while (n && n !== box) { left += n.offsetLeft || 0; top += n.offsetTop || 0; n = n.offsetParent; }
+      const w = native.offsetWidth || 32, h = native.offsetHeight || 32;
+      b.style.position = "absolute";
+      b.style.left = Math.max(0, left - FM_PASTE_GAP - w) + "px";
+      b.style.top = top + "px";
+      b.style.width = w + "px";
+      b.style.height = h + "px";
+      b.style.right = "auto";
+      return;
+    }
+  } catch (e) { /* fall through to the parked position */ }
+  // native button not measurable yet: park left of where it will appear
+  // (top-2 right-2, h-8 = 32px tall)
+  try {
+    b.style.position = "absolute";
+    b.style.left = "auto";
+    b.style.top = "8px";
+    b.style.right = (8 + 32 + FM_PASTE_GAP) + "px";
+    b.style.width = "";
+    b.style.height = "";
+  } catch (e) { /* no-op */ }
+}
+
+// Native image preview overlay bar ("actions invisible absolute top-2 right-2
+// flex gap-1 group-hover/panel:visible ..."): our paste button is inserted as
+// its FIRST child so it appears instantly together with the native buttons,
+// to the LEFT of the download icon.
+// The mask composite overlay (fm-node-tint) paints at z-index 10, which
+// would visually cover the native .actions hover bar (it has no z-index).
+// Raising the bar above the overlay keeps the hover icons visible AND
+// clickable once the composite appears.
+function raisePreviewActions(box) {
+  try {
+    const all = box.querySelectorAll ? box.querySelectorAll(".actions") : [];
+    for (const a of all) {
+      if (a.style && a.style.zIndex !== "20") a.style.zIndex = "20";
+    }
+  } catch (e) { /* no-op */ }
+}
+
+// Native image preview overlay bar ("actions invisible absolute top-2 right-2
+// flex gap-1 group-hover/panel:visible ..."): our paste button is inserted as
+// its FIRST child so it appears instantly together with the native buttons,
+// to the LEFT of the download icon.
+function findNativeActions(box) {
+  try {
+    const all = box.querySelectorAll(".actions");
+    for (const a of all) {
+      if (a.querySelector && a.querySelector("button")) return a;
+    }
+  } catch (e) { /* no-op */ }
+  return null;
+}
+
+// Hover paste button on the node's outer preview image: a pixel-exact clone
+// of the native download hover button (its className is copied live, so size,
+// style and hover timing always match), showing the right-click "Paste Image"
+// menu icon (lucide--clipboard-paste) inverse, placed first = left of download
+// with a slightly larger gap. Click pastes the clipboard image through the
+// same upload path as the right-click "Paste Image" menu action.
+function enablePreviewPasteButton(node) {
+  try {
+    const w = node.widgets && node.widgets.find((x) => x.name === "fm_open");
+    const nodeEl = (w && w.element && (w.element.closest("[data-node-id]") || document.querySelector('[data-node-id="' + node.id + '"]')))
+      || document.querySelector('[data-node-id="' + node.id + '"]');
+    if (!nodeEl) { setTimeout(() => enablePreviewPasteButton(node), 900); return; }
+    const preview = findNodePreview(nodeEl);
+    if (!preview) { setTimeout(() => enablePreviewPasteButton(node), 900); return; }
+    const box = preview.parentElement;
+    if (!box) return;
+    const actions = findNativeActions(box);
+    const native = findNativeDownloadBtn(box);
+    if (actions) raisePreviewActions(box);
+    const btnCls = (native && typeof native.className === "string" && native.className) || FM_NATIVE_BTN_CLS;
+    let b = box._fmPasteBtn;
+    if (b && b.isConnected) {
+      // keep the clone in sync: native classes may resolve after us, and the
+      // button must stay FIRST in the actions bar (left of download)
+      try {
+        if (b._fmNativeCls !== btnCls) {
+          b._fmNativeCls = btnCls;
+          b.className = "fm-preview-paste fm-extra-gap " + btnCls;
+        }
+        if (actions) {
+          // moving from fallback into the flex bar: drop the absolute offsets
+          b.style.left = ""; b.style.top = ""; b.style.width = ""; b.style.height = ""; b.style.right = ""; b.style.position = "";
+          if (b.parentElement !== actions) actions.insertBefore(b, actions.firstChild);
+          else if (actions.firstChild !== b) actions.insertBefore(b, actions.firstChild);
+        } else {
+          placeFallbackBtn(box, b, native);
+        }
+      } catch (e) {}
+      return;
+    }
+    const nb = document.createElement("button");
+    nb.type = "button";
+    nb._fmNativeCls = btnCls;
+    nb.innerHTML = iconPaste();
+    nb.title = "Paste image from clipboard";
+    nb.setAttribute("aria-label", "Paste image from clipboard");
+    nb.addEventListener("pointerdown", (e) => e.stopPropagation()); // do not drag the node
+    nb.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      fmPasteFromClipboard(node, nb);
+    });
+    if (actions) {
+      nb.className = "fm-preview-paste fm-extra-gap " + btnCls;
+      actions.insertBefore(nb, actions.firstChild);
+    } else {
+      // fallback: floating clone left of the native download button
+      if (getComputedStyle(box).position === "static") box.style.position = "relative";
+      box.classList.add("fm-preview-box");
+      nb.className = "fm-preview-paste fm-fallback " + btnCls;
+      placeFallbackBtn(box, nb, native);
+      box.appendChild(nb);
+    }
+    box._fmPasteBtn = nb;
+  } catch (e) { /* never break the app over cosmetics */ }
 }
 
 function isFastMaskNode(node) {

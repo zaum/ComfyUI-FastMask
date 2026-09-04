@@ -59,17 +59,28 @@ MUST be kept:
      third argument is the element, not a callback; the frontend then draws a
      static, non-clickable oval snapshot on the canvas.
 
-5. **Deployment for local testing** — the live instance loads the node from
-   `C:\Users\peter\ComfyUI-Installs\ComfyUI (v0.25.0)\ComfyUI\custom_nodes\ComfyUI-FastMask`
-   (a plain copy, not a junction). After editing, copy the whole repo content
-   (except `.git`, `__pycache__`) there and reload the frontend.
+5. **Deployment for local testing** — the live ComfyUI Desktop instance loads
+   the node from ONE location only (a plain copy, not a junction):
 
-   **MANDATORY: after EVERY fix/change** copy the repo to the live folder so the
-   running instance actually uses the new code. From the project root run:
+   - `C:\Users\peter\Documents\ComfyUI\custom_nodes\ComfyUI-FastMask`
+
+   Verified 2026-09-04: the `ComfyUI-Installs\...\custom_nodes` folder holds
+   only stock files (no user nodes), while `Documents\ComfyUI\custom_nodes`
+   holds all ~60 custom nodes; `extra_model_paths.yaml` maps `custom_nodes`
+   to the Documents folder; and the Desktop `app.log` loads FastMask from
+   `Documents\ComfyUI\custom_nodes\ComfyUI-FastMask`. A stale second copy
+   under `ComfyUI-Installs\...\custom_nodes\ComfyUI-FastMask` was deleted —
+   do NOT re-create it (a duplicate copy risks double registration).
+
+   **MANDATORY: after EVERY fix/change** copy the repo to the live folder so
+   the running instance actually uses the new code. From the project root run:
 
    ```powershell
-   robocopy "I:\APPLICATIONS\Comfy Mask Editor\fastmask" "C:\Users\peter\ComfyUI-Installs\ComfyUI (v0.25.0)\ComfyUI\custom_nodes\ComfyUI-FastMask" /MIR /XD .git __pycache__ /XF *.pyc
+   robocopy "I:\APPLICATIONS\Comfy Mask Editor\fastmask" "C:\Users\peter\Documents\ComfyUI\custom_nodes\ComfyUI-FastMask" /MIR /XD .git __pycache__ /XF *.pyc
    ```
+
+   (Robocopy exit codes 0–7 are SUCCESS; 8+ means real errors. Only `__pycache__`
+   exclusion matters for stale pyc files.)
 
    Then reload the ComfyUI frontend (F5) so the cache-safe `no-store` middleware
    serves the updated `fastmask_ui.js`.
@@ -118,3 +129,17 @@ restart ComfyUI and retry.
 - **Python changes require a ComfyUI restart** (F5 alone is not enough) — this
   was the cause of the "image deleted after run" symptom persisting across
   fixes.
+- **Pasted images MUST go to the input ROOT with `overwrite=false`** (v1.9.12).
+  The frontend's "Missing Inputs" panel (`scanNodeMediaCandidates` in the
+  bundled frontend JS) marks a combo widget red whenever the widget value is
+  NOT in the server's combo list, and `INPUT_TYPES` (FastMask AND LoadImage)
+  lists root files only. The native paste flow uploads to the root, letting
+  the server dedupe the name (`pasted-image (17).png`), so the value survives
+  F5 and node-def reloads. Uploading into `subfolder: "pasted"` produced a
+  value (`pasted/pasted-image.png`) that is never in the combo list → the node
+  went red at Queue time even though the file existed on disk.
+- **Do NOT call `app.refreshComboInNodes()` in the paste flow** (v1.9.13): it
+  reloads every node definition from the server and takes seconds, which made
+  pasting feel slow. The native flow only pushes the value into the widget's
+  combo options locally (`addToComboValues`); a root upload makes the file
+  appear in the server combo list at the next refresh anyway.

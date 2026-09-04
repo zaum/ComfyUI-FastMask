@@ -1,6 +1,6 @@
 # ComfyUI-FastMask
 
-A very fast, custom-built mask editor for ComfyUI – an alternative to the built-in MaskEditor.
+A fast, custom-built mask editor for ComfyUI – an alternative to the built-in MaskEditor.
 
 ![status](https://img.shields.io/badge/version-1.7.26-blue) ![status](https://img.shields.io/badge/status-beta-orange)
 
@@ -22,20 +22,21 @@ After restarting ComfyUI, look for the **`FastMask Editor`** node in the `mask` 
 
 ## Controls
 
-| Action | Command |
-|---|---|
-| Paint / Erase | Hold **left** / **right** mouse button |
-| Brush size | **Ctrl + drag up/down**, **Ctrl + wheel**, `[` / `]`, or slider |
-| Mask blur | **Ctrl + drag left/right** or the **Blur** slider (real-time preview in the B/W view) |
-| Paint/Erase switch | `X` or the toggle |
-| Zoom / Pan | **Mouse wheel** (cursor-anchored) / **middle drag** or hold **Space** |
-| Closed-shape auto-fill | On by default – toggle: `F` |
-| Undo / Redo | `Ctrl+Z` / `Ctrl+Y` or `Ctrl+Shift+Z` |
-| Clear all | `Ctrl+Delete` or button |
-| Show mask (B/W) | **Hover** the button for a preview, **click** to pin |
-| Hatch color | `C` or the button |
-| Fit image | `Ctrl+0` |
-| OK / Cancel | `Enter` / `Esc` |
+
+| Action                 | Command                                                                               |
+| ---------------------- | ------------------------------------------------------------------------------------- |
+| Paint / Erase          | Hold**left** / **right** mouse button                                                 |
+| Brush size             | **Ctrl + drag up/down**, **Ctrl + wheel**, `[` / `]`, or slider                       |
+| Mask blur              | **Ctrl + drag left/right** or the **Blur** slider (real-time preview in the B/W view) |
+| Paint/Erase switch     | `X` or the toggle                                                                     |
+| Zoom / Pan             | **Mouse wheel** (cursor-anchored) / **middle drag** or hold **Space**                 |
+| Closed-shape auto-fill | On by default – toggle:`F`                                                           |
+| Undo / Redo            | `Ctrl+Z` / `Ctrl+Y` or `Ctrl+Shift+Z`                                                 |
+| Clear all              | `Ctrl+Delete` or button                                                               |
+| Show mask (B/W)        | **Hover** the button for a preview, **click** to pin                                  |
+| Hatch color            | `C` or the button                                                                     |
+| Fit image              | `Ctrl+0`                                                                              |
+| OK / Cancel            | `Enter` / `Esc`                                                                       |
 
 Every button **shows its shortcut on hover** (mac: `⌘` instead of `Ctrl`).
 
