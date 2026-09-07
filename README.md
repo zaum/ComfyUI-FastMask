@@ -1,6 +1,6 @@
 # ComfyUI-FastMask
 
-A fast, custom-built mask editor for ComfyUI – an alternative to the built-in MaskEditor.
+A simple, fast, custom-built mask editor for ComfyUI – an alternative to the built-in MaskEditor.
 
 ![1788802921281](images/README/1788802921281.png)
 
