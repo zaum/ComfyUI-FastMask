@@ -163,6 +163,12 @@ restart ComfyUI and retry.
   into that strip every canvas frame from an `onDrawForeground` hook (re-applied
   on every move/zoom/resize, so it cannot go stale like the old absolute pin).
   `positionBottom` early-returns for legacy nodes; Nodes 2 keeps the DOM flow.
+- **Nodes 2 button below preview** (v1.9.17): the Vue frontend renders the
+  widget flow BEFORE the image preview, so the in-flow Edit Mask button sat
+  ABOVE the image. Fix: `moveButtonBelowPreview` moves the `fm_open` wrapper
+  AFTER the preview box in DOM order (widget array untouched) from
+  `positionBottom`, with a per-node MutationObserver that re-applies the order
+  after frontend re-renders. Nodes 1 keeps the canvas strip pin.
 
 
 Please make sure it is compatible with both versions of Nodes (1 and 2): Nodes 2.0 is now available in the Comfy Desktop, portable, and stable releases. This update transitions the Nodes system from LiteGraph.js Canvas rendering to a Vue-based architecture. If this would create a bottleneck or require a compromise, please indicate version 1.

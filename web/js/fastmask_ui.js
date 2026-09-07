@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.9.16";
+const FM_VERSION = "1.9.17";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -1695,6 +1695,60 @@ function alignPreviewTop(node) {
   } catch (e) { /* no-op */ }
 }
 
+// Nodes 2 (Vue DOM): move the Edit Mask button wrapper AFTER the image
+// preview box, so the button always renders BELOW the preview image.
+// The widget slot itself stays in the widgets array (sizing/serialization
+// untouched) - only the DOM order changes. Re-applied on every
+// positionBottom() call plus a MutationObserver, because the frontend
+// re-renders the node DOM (image load, resize, workflow load) and would
+// otherwise put the button back above the preview.
+function moveButtonBelowPreview(node) {
+  try {
+    if (!node || node._fmLegacy) return; // Nodes 1 uses the canvas strip pin
+    const wOpen = node.widgets && node.widgets.find((x) => x.name === "fm_open");
+    if (!wOpen || !wOpen.element) return;
+    const nodeEl = wOpen.element.closest("[data-node-id]") || document.querySelector('[data-node-id="' + node.id + '"]');
+    if (!nodeEl) return;
+    const doMove = () => {
+      try {
+        const w2 = (node.widgets || []).find((x) => x.name === "fm_open");
+        if (!w2 || !w2.element || !w2.element.isConnected) return false;
+        const wrap2 = w2.element.closest(".comfy-widget") || w2.element.parentElement || w2.element;
+        const nEl = w2.element.closest("[data-node-id]") || document.querySelector('[data-node-id="' + node.id + '"]');
+        const pv = nEl ? findNodePreview(nEl) : null;
+        if (!pv) return false; // preview not rendered yet
+        const pvBox = pv.closest(".image-preview") || pv.closest(".comfy-widget") || pv.parentElement;
+        if (!wrap2 || !pvBox || wrap2 === pvBox || pvBox.contains(wrap2)) return true;
+        if (wrap2.compareDocumentPosition(pvBox) & Node.DOCUMENT_POSITION_FOLLOWING) {
+          pvBox.after(wrap2);
+        }
+        try {
+          wrap2.style.setProperty("margin-top", "8px", "important");
+          wrap2.style.setProperty("margin-bottom", "4px", "important");
+          wrap2.style.setProperty("width", "100%", "important");
+        } catch (e) {}
+        return true;
+      } catch (e) { return false; }
+    };
+    // Keep the button below the preview across frontend re-renders: watch the
+    // node DOM once and re-move when Vue puts the wrapper back above. Installed
+    // before the preview check so late image loads are caught too.
+    if (!node._fmBelowObs && typeof MutationObserver === "function") {
+      try {
+        let scheduled = false;
+        const mo = new MutationObserver(() => {
+          if (scheduled) return;
+          scheduled = true;
+          setTimeout(() => { scheduled = false; doMove(); }, 50);
+        });
+        mo.observe(nodeEl, { childList: true, subtree: true });
+        node._fmBelowObs = mo;
+      } catch (e) {}
+    }
+    doMove();
+  } catch (e) { /* never break the node over button order */ }
+}
+
 function positionBottom(node) {
   try {
     if (node._fmLegacy) return; // Nodes 1: the button is pinned below the canvas preview
@@ -1747,6 +1801,7 @@ function positionBottom(node) {
       }
     } catch (e) {}
     alignPreviewTop(node);
+    moveButtonBelowPreview(node);
     // hide any stale version label or grey pill
     const nodeEl = wOpen && wOpen.element ? (wOpen.element.closest("[data-node-id]") || document.querySelector(`[data-node-id="${node.id}"]`) || wOpen.element.parentElement) : document.querySelector(`[data-node-id="${node.id}"]`);
     if (nodeEl) {
