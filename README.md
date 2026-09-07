@@ -1,8 +1,8 @@
 # ComfyUI-FastMask
 
 A fast, custom-built mask editor for ComfyUI – an alternative to the built-in MaskEditor.
+![version](https://img.shields.io/badge/version-1.9.16-blue) ![status](https://img.shields.io/badge/status-beta-orange)
 
-![status](https://img.shields.io/badge/version-1.7.26-blue) ![status](https://img.shields.io/badge/status-beta-orange)
 
 ## Installation
 

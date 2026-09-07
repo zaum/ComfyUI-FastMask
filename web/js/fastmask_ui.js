@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.9.13";
+const FM_VERSION = "1.9.16";
 const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -1438,6 +1438,8 @@ async function saveAndClose() {
       }
       // tell the node to load the fresh composite immediately (no polling)
       try { if (window.__fmCompSync && window.__fmCompSync[st.node.id]) window.__fmCompSync[st.node.id](); } catch (e) {}
+      // Nodes 1 (LiteGraph canvas): swap the node preview to the composite
+      fmSetNodePreviewComposite(st.node);
     } catch (e) { /* composite is best-effort; mask saving already succeeded */ }
     const w = (st.node.widgets || []).find((w) => w.name === "mask_path");
     if (w) {
@@ -1544,10 +1546,19 @@ function makeVersionEl() {
 // is shown inside the Edit Mask button).
 function stripStaleWidgets(node) {
   const widgets = node.widgets || [];
+  let keptFmOpen = false;
   for (let i = widgets.length - 1; i >= 0; i--) {
     const w = widgets[i];
     if (!w) continue;
-    if (w.name === "fm_open") continue; // keep our own button
+    if (w.name === "fm_open") {
+      // keep the FIRST fm_open, drop duplicates (several registration paths
+      // call addOpenButton - in the LiteGraph (Nodes 1) UI this used to add
+      // the Edit Mask button twice)
+      if (!keptFmOpen) { keptFmOpen = true; continue; }
+      widgets.splice(i, 1);
+      fmLog("duplicate fm_open widget removed");
+      continue;
+    }
     const nm = String(w.name || "").toLowerCase();
     const lb = String(w.label || w.name || "").toLowerCase();
     const elText = (w.element && w.element.textContent) ? w.element.textContent.toLowerCase() : "";
@@ -1686,6 +1697,7 @@ function alignPreviewTop(node) {
 
 function positionBottom(node) {
   try {
+    if (node._fmLegacy) return; // Nodes 1: the button is pinned below the canvas preview
     const wOpen = node.widgets && node.widgets.find((x) => x.name === "fm_open");
     // The button is a NORMAL in-flow DOM widget: ComfyUI positions the widget
     // wrapper itself, so the button ALWAYS moves / zooms / resizes together
@@ -1787,7 +1799,18 @@ function enableNodeMaskOverlay(node) {
     const nodeEl = wrapper.closest("[data-node-id]") || document.querySelector(`[data-node-id="${node.id}"]`) || wrapper.parentElement;
     if (!nodeEl) return;
     const preview = findNodePreview(nodeEl);
-    if (!preview) { setTimeout(() => enableNodeMaskOverlay(node), 900); return; }
+    if (!preview) {
+      // Give up after ~10 attempts (~9s): the preview may never render (e.g.
+      // frontend re-layout), an endless 900ms retry loop would just churn.
+      node._fmOverlayTries = (node._fmOverlayTries || 0) + 1;
+      if (node._fmOverlayTries <= 10) {
+        setTimeout(() => enableNodeMaskOverlay(node), 900);
+      } else {
+        fmLog("enableNodeMaskOverlay: no preview found, giving up (node", node.id + ")");
+      }
+      return;
+    }
+    node._fmOverlayTries = 0;
     const box = preview.parentElement;
     if (!box) return;
     if (box._fmCompWired) return;
@@ -1956,6 +1979,14 @@ function addOpenButton(node) {
   // never opened (buildUI/injectCSS only runs on editor open)
   try { injectCSS(); } catch (e) {}
   stripStaleWidgets(node);
+  // A widget may already exist (onNodeCreated, nodeCreated, onConfigure and
+  // the graph scan all call this). Adding another one duplicates the button
+  // in the LiteGraph (Nodes 1) frontend - reposition and bail out instead.
+  const existingOpen = (node.widgets || []).find((x) => x.name === "fm_open");
+  if (existingOpen && existingOpen.element) {
+    try { positionBottom(node); } catch (e) {}
+    return;
+  }
   // our own paste handlers (Ctrl+V and the right-click "Paste Image" menu
   // action both route through node.pasteFile / node.pasteFiles)
   installFastMaskPaste(node);
@@ -1977,6 +2008,18 @@ function addOpenButton(node) {
   // as the third argument of addDOMWidget. Canvas button widgets and
   // wrongly-typed DOM widgets rendered as static, non-interactive snapshots
   // in this frontend version; a real element always receives pointer events.
+  // Nodes 1 (LiteGraph canvas) detection: the Vue (Nodes 2) frontend renders
+  // [data-node-id] wrappers, the canvas UI never does. Decide once, delayed
+  // so Nodes 2 has time to mount its DOM first.
+  setTimeout(() => {
+    try {
+      if (node._fmLegacy === undefined && !document.querySelector("[data-node-id]")) {
+        node._fmLegacy = true;
+        setupLegacyButtonPin(node);
+      }
+    } catch (e) {}
+  }, 500);
+
   if (typeof node.addDOMWidget === "function") {
     try {
       const el = makeOpenButtonEl(node);
@@ -2272,9 +2315,19 @@ function enablePreviewPasteButton(node) {
     const w = node.widgets && node.widgets.find((x) => x.name === "fm_open");
     const nodeEl = (w && w.element && (w.element.closest("[data-node-id]") || document.querySelector('[data-node-id="' + node.id + '"]')))
       || document.querySelector('[data-node-id="' + node.id + '"]');
-    if (!nodeEl) { setTimeout(() => enablePreviewPasteButton(node), 900); return; }
+    if (!nodeEl) {
+      // capped retry: the DOM preview may never render (e.g. Nodes 1 canvas UI)
+      node._fmPasteTries = (node._fmPasteTries || 0) + 1;
+      if (node._fmPasteTries <= 10) setTimeout(() => enablePreviewPasteButton(node), 900);
+      return;
+    }
+    node._fmPasteTries = 0;
     const preview = findNodePreview(nodeEl);
-    if (!preview) { setTimeout(() => enablePreviewPasteButton(node), 900); return; }
+    if (!preview) {
+      node._fmPasteTries = (node._fmPasteTries || 0) + 1;
+      if (node._fmPasteTries <= 10) setTimeout(() => enablePreviewPasteButton(node), 900);
+      return;
+    }
     const box = preview.parentElement;
     if (!box) return;
     const actions = findNativeActions(box);
@@ -2334,6 +2387,129 @@ function isFastMaskNode(node) {
     node.constructor?.name === "FastMaskEditor" ||
     (String(node.type || "").indexOf("FastMaskEditor") !== -1) ||
     (node.getTitle ? String(node.getTitle()).indexOf("FastMask") !== -1 : false);
+}
+
+/* ------------- Nodes 1 (LiteGraph canvas) button placement -------------- */
+// In the canvas UI the preview is drawn by the frontend from node.imgs in the
+// free space at the bottom of the node - BELOW every widget - so an in-flow
+// DOM widget always lands ABOVE the image. Instead, the button is pinned over
+// a dedicated strip at the very bottom: node.imgs is replaced with a padded
+// copy (image + dark strip) and the button element is shifted there per frame.
+const FM_LEGACY_STRIP = 36;
+
+function fmPadLegacyImage(img, node, cb) {
+  try {
+    const iw = img.naturalWidth || img.width || 512;
+    const ih = img.naturalHeight || img.height || 512;
+    const c = document.createElement("canvas");
+    c.width = iw;
+    c.height = ih + FM_LEGACY_STRIP;
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#2b2b2b"; // matches the button background -> seamless strip
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(img, 0, 0);
+    const out = new Image();
+    out.onload = () => { if (cb) cb(out); };
+    out.onerror = () => { if (cb) cb(img); };
+    out.src = c.toDataURL("image/jpeg", 0.92);
+  } catch (e) { if (cb) cb(img); }
+}
+
+function fmApplyLegacyPreview(node, padded) {
+  try {
+    node.imgs = [padded];
+    if (node.setSizeForImage) { try { node.setSizeForImage(); } catch (e) {} }
+    if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+    else { try { app.graph.setDirtyCanvas(true, true); } catch (e) {} }
+  } catch (e) { /* no-op */ }
+}
+
+function fmSetLegacyNodePreview(node, url) {
+  try {
+    const img = new Image();
+    img.onload = () => fmPadLegacyImage(img, node, (padded) => fmApplyLegacyPreview(node, padded));
+    img.src = url;
+  } catch (e) { /* no-op */ }
+}
+
+function setupLegacyButtonPin(node) {
+  try {
+    const w = (node.widgets || []).find((x) => x.name === "fm_open");
+    if (!w) return;
+    w.computeSize = () => [-1, 0]; // no slot in the widget flow
+    const el = w.element;
+    if (el) {
+      // undo the in-flow overrides positionBottom applied earlier
+      const box = el.closest(".comfy-widget") || el.parentElement;
+      if (box) {
+        box.style.removeProperty("height");
+        box.style.removeProperty("margin-top");
+        box.style.removeProperty("position");
+      }
+    }
+    if (!node._fmPinHooked) {
+      node._fmPinHooked = true;
+      const origFG = node.onDrawForeground;
+      // Runs every canvas frame AFTER the widget flow positioning, so the
+      // shift is re-applied on every move/zoom/resize and can never go stale.
+      // The element's target top is the node's bottom strip; the current top
+      // comes from its own rect (minus the shift applied last frame).
+      node.onDrawForeground = function () {
+        const r = origFG ? origFG.apply(this, arguments) : undefined;
+        try {
+          const el2 = w.element;
+          if (el2 && app.canvas && app.canvas.canvas && app.canvas.ds) {
+            const canvas = app.canvas.canvas;
+            const ds = app.canvas.ds;
+            const scale = ds.scale || 1;
+            let ny;
+            if (ds.graphToCanvas) ny = ds.graphToCanvas(node.pos[0], node.pos[1])[1];
+            else ny = (node.pos[1] + ds.offset[1]) * scale;
+            const canvasTop = canvas.getBoundingClientRect().top;
+            const target = canvasTop + ny + (node.size[1] - 34) * scale;
+            const elRect = el2.getBoundingClientRect();
+            const prev = node._fmPinDy || 0;
+            const dy = target - (elRect.top - prev);
+            node._fmPinDy = dy;
+            el2.style.transform = "translateY(" + dy.toFixed(2) + "px)";
+          }
+        } catch (e) {}
+        return r;
+      };
+    }
+    fmLog("legacy (Nodes 1) layout: Edit Mask button pinned below the preview");
+  } catch (e) { /* no-op */ }
+}
+
+// Nodes 1 (LiteGraph canvas) preview: LiteGraph draws node.imgs directly on
+// the canvas, there is no DOM preview element to overlay. Show the ready-made
+// composite JPEG (image + mask, uploaded by the editor OK button) as the
+// node's preview image instead of the bare original.
+function fmSetNodePreviewComposite(node) {
+  try {
+    if (!node || !isFastMaskNode(node)) return;
+    const url = api.apiURL("/view?" + new URLSearchParams({
+      filename: "fastmask_node" + node.id + "_composite.jpg",
+      subfolder: "fastmask",
+      type: "input",
+      _t: Date.now(),
+    }));
+    // Nodes 1 (canvas UI): pad the preview with a strip below the image and
+    // swap it into node.imgs so the pinned button gets its own slot
+    if (node._fmLegacy) { fmSetLegacyNodePreview(node, url); return; }
+    const img = new Image();
+    img.onload = () => {
+      try {
+        if (!node.imgs) node.imgs = [];
+        node.imgs[0] = img;
+        if (node.setSizeForImage) { try { node.setSizeForImage(); } catch (e) {} }
+        if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+        else { try { app.graph.setDirtyCanvas(true, true); } catch (e) {} }
+      } catch (e) {}
+    };
+    img.onerror = () => {}; // no composite saved yet - keep the original preview
+    img.src = url;
+  } catch (e) { /* no-op */ }
 }
 
 function scanExistingNodes() {
@@ -2420,6 +2596,32 @@ app.registerExtension({
     fmLog("extension loaded, scanning nodes...");
     hideNativeMaskButtons();
     scanExistingNodes();
+    // Nodes 1 (LiteGraph canvas): after each run, show the mask composite on
+    // the node preview (the DOM overlay only exists in the Nodes 2 frontend).
+    try {
+      api.addEventListener("executed", (e) => {
+        try {
+          const node = app.graph.getNodeById(e.detail && e.detail.node);
+          if (!node || !isFastMaskNode(node)) return;
+          const mp = (node.widgets || []).find((x) => x.name === "mask_path");
+          if (mp && mp.value) {
+            // LiteGraph loads the original preview asynchronously; re-apply the
+            // composite after it so the mask stays visible
+            setTimeout(() => fmSetNodePreviewComposite(node), 300);
+          } else if (node._fmLegacy && e.detail.images && e.detail.images.length) {
+            // Nodes 1 without a mask: pad the source preview so the pinned
+            // Edit Mask button keeps its own strip below the image
+            const im = e.detail.images[0];
+            const url = api.apiURL("/view?" + new URLSearchParams({
+              filename: im.filename,
+              subfolder: im.subfolder || "",
+              type: im.type || "output",
+            }));
+            setTimeout(() => fmSetLegacyNodePreview(node, url), 300);
+          }
+        } catch (err) {}
+      });
+    } catch (e) {}
     // also run after workflow loads (setup only runs once)
     const origConfigure = app.configureGraph ? app.configureGraph.bind(app) : null;
     if (origConfigure) {

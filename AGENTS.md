@@ -29,15 +29,12 @@ MUST be kept:
 
    Relative paths like `../../scripts/app.js` resolve to
    `/extensions/scripts/...` (404) and the module fails to load silently.
-
 2. **`no-store` middleware.** `__init__.py` installs an aiohttp middleware that
    adds `Cache-Control: no-store, must-revalidate` to every response under
    `/extensions/ComfyUI-FastMask`, so the browser never caches the JS.
-
 3. **Version marker in the UI.** `FM_VERSION` in `fastmask_ui.js` is rendered on
    the node's open button (e.g. `FastMask Editor v1.1.1`), so the actually
    running frontend version is visible at a glance.
-
 4. **The open button must be a DOM widget with a REAL element body.** The only
    button mechanism proven to work in this frontend (frontend v1.49.6) is the
    same one the working `one-node-flux-2-klein` node uses: pass an actual
@@ -54,11 +51,11 @@ MUST be kept:
    ```
 
    Pitfalls that do NOT work here (all tested):
+
    - `node.addWidget("button", ...)` canvas widget → click never fires.
    - `addDOMWidget(name, "button", callback, ...)` → WRONG signature: the
      third argument is the element, not a callback; the frontend then draws a
      static, non-clickable oval snapshot on the canvas.
-
 5. **Deployment for local testing** — the live ComfyUI Desktop instance loads
    the node from ONE location only (a plain copy, not a junction):
 
@@ -143,3 +140,29 @@ restart ComfyUI and retry.
   pasting feel slow. The native flow only pushes the value into the widget's
   combo options locally (`addToComboValues`); a root upload makes the file
   appear in the server combo list at the next refresh anyway.
+- **Nodes 1 (LiteGraph canvas) compatibility** (v1.9.15): the DOM overlay
+  (`enableNodeMaskOverlay`) only works in the Nodes 2 (Vue) frontend — Nodes 1
+  draws the preview from `node.imgs` straight on the canvas. There:
+  - `addOpenButton` MUST early-return when an `fm_open` widget with an element
+    already exists (onNodeCreated + nodeCreated + onConfigure + graph scan all
+    call it; in Nodes 1 that added the Edit Mask button twice), and
+    `stripStaleWidgets` keeps only the FIRST `fm_open`.
+  - the mask is shown via `fmSetNodePreviewComposite` (swaps `node.imgs[0]` to
+    the composite JPEG) — called from `saveAndClose` and from an
+    `api.addEventListener("executed", ...)` hook (300 ms delay: LiteGraph loads
+    the original preview asynchronously and would overwrite `node.imgs`).
+  - `enablePreviewPasteButton` retry loops are capped at 10 attempts (Nodes 1
+    has no DOM preview, the old code would retry every 900 ms forever).
+- **Nodes 1 button placement** (v1.9.16): in the canvas UI the preview is drawn
+  from `node.imgs` in the free space at the bottom of the node, so an in-flow
+  DOM widget ALWAYS lands ABOVE the image. Fix: `node._fmLegacy` is decided
+  once (500 ms after node creation: legacy = no `[data-node-id]` anywhere in
+  the document); then `setupLegacyButtonPin` gives the widget a 0-height slot,
+  replaces `node.imgs` with a padded copy (image + 36 px dark strip,
+  `fmPadLegacyImage` / `fmSetLegacyNodePreview`), and shifts the button element
+  into that strip every canvas frame from an `onDrawForeground` hook (re-applied
+  on every move/zoom/resize, so it cannot go stale like the old absolute pin).
+  `positionBottom` early-returns for legacy nodes; Nodes 2 keeps the DOM flow.
+
+
+Please make sure it is compatible with both versions of Nodes (1 and 2): Nodes 2.0 is now available in the Comfy Desktop, portable, and stable releases. This update transitions the Nodes system from LiteGraph.js Canvas rendering to a Vue-based architecture. If this would create a bottleneck or require a compromise, please indicate version 1.

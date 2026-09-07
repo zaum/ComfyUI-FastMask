@@ -1,6 +1,8 @@
 import hashlib
 import io
 import os
+import time
+import traceback
 
 import numpy as np
 import torch
@@ -62,7 +64,6 @@ class FastMaskEditor:
         return True
 
     def load(self, image, mask_path="", image_opt=None):
-        import time, traceback
         try:
             if image_opt is not None:
                 return self._load_from_tensor(image_opt, mask_path)
@@ -148,11 +149,12 @@ class FastMaskEditor:
         else:
             out_mask = torch.from_numpy(mask).to(torch.float32)
         out_mask = out_mask.unsqueeze(0)
+        painted_pct = float((out_mask[0] > 0.5).float().mean()) * 100.0
+        print(f"[FastMask] mask: path={mask_path!r} painted={painted_pct:.1f}% size={w}x{h}")
 
         # File-based image: show the original on the node (always available).
         if image_value:
             ui_images = self._source_ui(image_value)
-            print(f"[FastMask] mask: path={mask_path!r} painted={(float((out_mask[0] > 0.5).float().mean()) * 100):.1f}% size={w}x{h}")
             return out_mask, ui_images or []
 
         # Tensor-based image (no source file): generate a preview PNG so the
@@ -166,8 +168,6 @@ class FastMaskEditor:
             preview = Image.composite(overlay, preview, m8.point(lambda v: int(v * 0.55)))
         save_name = None
         try:
-            painted = float((out_mask[0] > 0.5).float().mean())
-            print(f"[FastMask] mask: path={mask_path!r} painted={painted * 100:.1f}% size={w}x{h}")
             preview_dir = os.path.join(folder_paths.get_input_directory(), "fastmask")
             os.makedirs(preview_dir, exist_ok=True)
             buf = io.BytesIO()

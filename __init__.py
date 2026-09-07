@@ -9,10 +9,10 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
 def _install_no_cache_middleware():
     """
-    A FastMask frontend JS kiszolgalasara no-cache headert tesz, hogy a
-    bongeszo / ComfyUI Desktop (Electron) ne cache-elje be a regit.
-    A szerver a fájlt a repobol olvassa, ezert igy minden szerkesztes azonnal
-    ervenyesul egy egyszeru oldalletoltes utan is.
+    Adds a no-cache header to every FastMask frontend JS response so the
+    browser / ComfyUI Desktop (Electron) never caches an old copy.
+    The server reads the file straight from the repo, so every edit takes
+    effect after a simple page reload.
     """
     try:
         from aiohttp import web
@@ -31,9 +31,9 @@ def _install_no_cache_middleware():
         app = PromptServer.instance.app
         if _no_cache_fastmask not in app.middlewares:
             app.middlewares.append(_no_cache_fastmask)
-            logging.info("[FastMask] no-cache middleware telepitve a /extensions/ComfyUI-FastMask utvonalra")
+            logging.info("[FastMask] no-cache middleware installed for /extensions/ComfyUI-FastMask")
     except Exception as e:
-        logging.warning("[FastMask] no-cache middleware telepitese sikertelen: %s", e)
+        logging.warning("[FastMask] failed to install no-cache middleware: %s", e)
 
 
 _install_no_cache_middleware()
