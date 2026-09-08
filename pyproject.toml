@@ -1,7 +1,7 @@
 [project]
 name = "fastmask"
 description = "Simple, fast canvas-based mask editor for ComfyUI: dirty-rect rendering, preview-resolution painting with full-res export, tile-based undo/redo."
-version = "1.9.18"
+version = "1.9.19"
 license = { text = "MIT" }
 dependencies = []
 
@@ -11,7 +11,7 @@ Repository = "https://github.com/zaum/ComfyUI-FastMask"
 [tool.comfy]
 PublisherId = "zaum"
 DisplayName = "FastMask"
-Icon = ""
+Icon = "https://raw.githubusercontent.com/zaum/ComfyUI-FastMask/main/logo.svg"
 # Public preview image shown in the ComfyUI Manager / registry listing
 Banner = "https://raw.githubusercontent.com/zaum/ComfyUI-FastMask/main/screenshot.jpg"
 Tags = ["mask", "maskeditor", "inpaint", "fast"]
