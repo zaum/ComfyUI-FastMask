@@ -6,6 +6,20 @@ A simple, fast, custom-built mask editor for ComfyUI – an alternative to the b
 
 ## Installation
 
+### Method 1 – ComfyUI Manager (recommended)
+
+1. Open **ComfyUI Manager** in ComfyUI (Manager menu → **Custom Nodes Manager**).
+2. Search for **`FastMask`** (the search is not case-sensitive; the registry ID is `fastmask`).
+3. Click **Install**, then **restart ComfyUI**.
+
+Or from a terminal:
+
+```bash
+comfy node install fastmask
+```
+
+### Method 2 – Git clone
+
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/zaum/ComfyUI-FastMask
