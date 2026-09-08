@@ -4,3 +4,5 @@ __pycache__/
 nul
 .DS_Store
 AGENTS.md
+web/_search_tmp.py
+web/js/*.bak
