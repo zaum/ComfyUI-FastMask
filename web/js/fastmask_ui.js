@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.9.22";
+const FM_VERSION = "1.9.23";
 // Full-res export guard: a W*H canvas plus toBlob can use hundreds of MB.
 const MAX_EXPORT_MP = 64; // megapixels; above this the user must confirm
 
@@ -1918,29 +1918,42 @@ function fmCleanupNode(node) {
 }
 
 // Effective source key: a connected IMAGE link wins over the dropdown widget.
-// The old code only watched the dropdown value, so plugging a cable into the
-// input never cleared the stale mask/composite and the preview looked frozen.
+// The mask link is part of the key too, so swapping the external mask clears
+// the stale composite. The old code only watched the dropdown value, so
+// plugging a cable into the input never cleared the stale mask/composite and
+// the preview looked frozen.
 function fmEffectiveSourceKey(node) {
+  // Returns "imgKey|maskKey". The image part covers the IMAGE link (wins over
+  // the dropdown widget); the mask part covers the MASK link origin. They are
+  // tracked separately so swapping the external mask never deletes a painted
+  // mask_path file (the painted file always wins over mask_opt).
+  let img = "", mask = "";
   try {
     for (const inp of node.inputs || []) {
-      if (inp.type !== "IMAGE" || !inp.link) continue;
+      if (!inp.link) continue;
       const link = app.graph && app.graph.links ? app.graph.links[inp.link] : null;
       const origin = link ? link.origin_id : "?";
-      let up = "";
-      try {
-        const out = app.nodeOutputs ? app.nodeOutputs[origin] : null;
-        const imgs = (out && out.images) || [];
-        const first = imgs.find((i) => i.type === "output") || imgs[0];
-        if (first) up = (first.subfolder || "") + "/" + (first.filename || "") + ":" + (first.type || "");
-      } catch (e) {}
-      return "link:" + origin + ":" + up;
+      if (inp.type === "IMAGE") {
+        let up = "";
+        try {
+          const out = app.nodeOutputs ? app.nodeOutputs[origin] : null;
+          const imgs = (out && out.images) || [];
+          const first = imgs.find((i) => i.type === "output") || imgs[0];
+          if (first) up = (first.subfolder || "") + "/" + (first.filename || "") + ":" + (first.type || "");
+        } catch (e) {}
+        img = "link:" + origin + ":" + up;
+      } else if (inp.type === "MASK") {
+        mask = "link:" + origin;
+      }
     }
   } catch (e) {}
-  try {
-    const imgW = (node.widgets || []).find((x) => x.name === "image");
-    return "widget:" + String(imgW && imgW.value != null ? imgW.value : "");
-  } catch (e) {}
-  return "widget:";
+  if (!img) {
+    try {
+      const imgW = (node.widgets || []).find((x) => x.name === "image");
+      img = "widget:" + String(imgW && imgW.value != null ? imgW.value : "");
+    } catch (e) {}
+  }
+  return img + "|" + mask;
 }
 
 function fmClearMaskPath(node) {
@@ -2108,18 +2121,21 @@ function enableNodeMaskOverlay(node) {
     // ultra-cheap self-heal tick: only ensures the overlay exists, is attached
     // and is positioned (NO image re-fetch unless mask_path changed). This
     // recovers the mask after any ComfyUI DOM re-render that removed it.
-    // ALSO: when the effective source (cable link OR image widget) changes,
-    // the previously painted mask no longer matches the new image - clear
-    // mask_path and hide the stale composite so the old mask does NOT
-    // reappear on a new image. Live-sync the linked preview too.
+    // ALSO: when the effective IMAGE source (cable link OR image widget)
+    // changes, the previously painted mask no longer matches the new image -
+    // clear mask_path and hide the stale composite so the old mask does NOT
+    // reappear on a new image. A changed MASK link alone never clears a
+    // painted file (the painted file always wins over mask_opt). Live-sync
+    // the linked preview too.
     if (!box._fmCompTimer) {
       box._fmCompTimer = setInterval(() => {
         try {
           const key = fmEffectiveSourceKey(node);
-          if (box._fmLastSrcKey === undefined) {
-            box._fmLastSrcKey = key; // first tick: just remember, do not clear
-          } else if (key !== box._fmLastSrcKey) {
-            box._fmLastSrcKey = key;
+          const imgKey = key.split("|")[0];
+          if (box._fmLastImgKey === undefined) {
+            box._fmLastSrcKey = key; box._fmLastImgKey = imgKey; // first tick: just remember, do not clear
+          } else if (imgKey !== box._fmLastImgKey) {
+            box._fmLastSrcKey = key; box._fmLastImgKey = imgKey;
             const imgW = (node.widgets || []).find((x) => x.name === "image");
             const imgVal = imgW ? String(imgW.value == null ? "" : imgW.value) : "";
             // keep the combo list in sync with pasted/uploaded files so the
@@ -2130,6 +2146,8 @@ function enableNodeMaskOverlay(node) {
             fmClearMaskPath(node);
             if (box._fmCompOv) box._fmCompOv.style.display = "none";
             lastPath = null;
+          } else if (key !== box._fmLastSrcKey) {
+            box._fmLastSrcKey = key; // mask link changed: no clearing, just re-sync
           }
           try { fmSyncLinkPreview(node); } catch (e) {}
           const mpNow = (node.widgets || []).find((x) => x.name === "mask_path");
@@ -2207,19 +2225,22 @@ function addOpenButton(node) {
   // action both route through node.pasteFile / node.pasteFiles)
   installFastMaskPaste(node);
 
-  // React immediately when a cable is plugged into / unplugged from the IMAGE
-  // input: clear the stale mask and live-sync the preview (the 2s overlay
-  // tick is only a safety net after this).
+  // React immediately when a cable is plugged into / unplugged from the
+  // IMAGE or MASK input: an image change clears the stale painted mask and
+  // live-syncs the preview (the 2s overlay tick is only a safety net after
+  // this); a mask-cable change alone never deletes a painted file.
   if (!node._fmConnHooked) {
     node._fmConnHooked = true;
     node._fmLastSrcKey = fmEffectiveSourceKey(node);
+    node._fmLastImgKey = node._fmLastSrcKey.split("|")[0];
     const origConn = node.onConnectionsChange;
     node.onConnectionsChange = function () {
       const r = origConn ? origConn.apply(this, arguments) : undefined;
       try {
         const key = fmEffectiveSourceKey(node);
-        if (key !== node._fmLastSrcKey) {
-          node._fmLastSrcKey = key;
+        const imgKey = key.split("|")[0];
+        if (imgKey !== node._fmLastImgKey) {
+          node._fmLastSrcKey = key; node._fmLastImgKey = imgKey;
           fmClearMaskPath(node);
           try {
             const w = (node.widgets || []).find((x) => x.name === "fm_open");
@@ -2228,8 +2249,10 @@ function addOpenButton(node) {
             const preview = nodeEl ? findNodePreview(nodeEl) : null;
             const box = preview && preview.parentElement;
             if (box && box._fmCompOv) box._fmCompOv.style.display = "none";
-            if (box) box._fmLastSrcKey = key;
+            if (box) { box._fmLastSrcKey = key; box._fmLastImgKey = imgKey; }
           } catch (e) {}
+        } else if (key !== node._fmLastSrcKey) {
+          node._fmLastSrcKey = key; // mask cable changed: keep the painted file
         }
         fmSyncLinkPreview(node);
       } catch (e) {}
