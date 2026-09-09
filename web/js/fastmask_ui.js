@@ -1562,7 +1562,7 @@ function wireImageMaskReset(node) {
 function makeOpenButtonEl(node) {
   const el = document.createElement("button");
   el.type = "button";
-  el.textContent = "Edit Mask v" + FM_VERSION;
+  el.textContent = "Edit Mask";
   el.setAttribute("data-fastmask-open", "1"); // never let hideNativeMaskButtons() hide our own button
   el.style.cssText =
     "display:block;width:100%;height:32px;min-height:32px;max-height:32px;box-sizing:border-box;flex:none;" +
