@@ -24,8 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.9.19";
-const BTN_LABEL = "\uD83D\uDD8C FastMask Editor v" + FM_VERSION;
+const FM_VERSION = "1.9.20";
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
 const MOD = isMac ? "\u2318" : "Ctrl";
@@ -818,8 +817,13 @@ function startStroke(p, mode) {
     const bw = bwMode();
     h.save();
     h.globalCompositeOperation = isErase ? "destination-out" : "source-over";
-    h.fillStyle = bw ? "#ffffff" : (st.hatchPattern || st.hatchColor);
-    h.strokeStyle = bw ? "#ffffff" : (st.hatchPattern || st.hatchColor);
+    // Erase must use a solid opaque color: destination-out removes
+    // proportionally to source alpha, so the semi-transparent hatch pattern
+    // would only partially erase and leave a faint ghost (visible until the
+    // next full redraw on zoom/fit).
+    const solid = "#ffffff";
+    h.fillStyle = (isErase || bw) ? solid : (st.hatchPattern || st.hatchColor);
+    h.strokeStyle = (isErase || bw) ? solid : (st.hatchPattern || st.hatchColor);
     h.lineCap = "round";
     h.lineJoin = "round";
     h.lineWidth = lw;
@@ -1517,7 +1521,7 @@ function wireImageMaskReset(node) {
 function makeOpenButtonEl(node) {
   const el = document.createElement("button");
   el.type = "button";
-  el.textContent = "Edit Mask v" + FM_VERSION;
+  el.textContent = "Edit Mask";
   el.setAttribute("data-fastmask-open", "1"); // never let hideNativeMaskButtons() hide our own button
   el.style.cssText =
     "display:block;width:100%;height:32px;min-height:32px;max-height:32px;box-sizing:border-box;flex:none;" +
@@ -1527,15 +1531,6 @@ function makeOpenButtonEl(node) {
   el.addEventListener("mouseleave", () => { el.style.background = "#2b2b2b"; });
   el.addEventListener("pointerdown", (e) => e.stopPropagation()); // do not drag the node
   el.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); fmEditorClick(node); });
-  return el;
-}
-
-function makeVersionEl() {
-  const el = document.createElement("div");
-  el.textContent = "FastMask v" + FM_VERSION;
-  el.style.cssText =
-    "text-align:center;color:#8cf;font:600 11px/1.3 system-ui,Segoe UI,sans-serif;" +
-    "padding:2px 0 1px;box-sizing:border-box;pointer-events:none;user-select:none";
   return el;
 }
 
