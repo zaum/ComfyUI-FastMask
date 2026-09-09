@@ -29,9 +29,14 @@ def _install_no_cache_middleware():
             return response
 
         app = PromptServer.instance.app
-        if _no_cache_fastmask not in app.middlewares:
-            app.middlewares.append(_no_cache_fastmask)
-            logging.info("[FastMask] no-cache middleware installed for /extensions/ComfyUI-FastMask")
+        # Module reloads create a new function object, so identity checks
+        # would duplicate the middleware on every "Refresh Custom Nodes".
+        # Guard by name instead.
+        for mw in app.middlewares:
+            if getattr(mw, "__name__", "") == "_no_cache_fastmask":
+                return
+        app.middlewares.append(_no_cache_fastmask)
+        logging.info("[FastMask] no-cache middleware installed for /extensions/ComfyUI-FastMask")
     except Exception as e:
         logging.warning("[FastMask] failed to install no-cache middleware: %s", e)
 

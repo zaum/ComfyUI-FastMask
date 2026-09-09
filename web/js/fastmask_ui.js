@@ -24,7 +24,9 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.9.20";
+const FM_VERSION = "1.9.22";
+// Full-res export guard: a W*H canvas plus toBlob can use hundreds of MB.
+const MAX_EXPORT_MP = 64; // megapixels; above this the user must confirm
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
 const MOD = isMac ? "\u2318" : "Ctrl";
@@ -68,6 +70,9 @@ const CSS = `
 .fm-btn:disabled{opacity:.4;cursor:default}
 .fm-btn::after{content:attr(data-tip);position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);background:#000;color:#fff;border:1px solid #555;padding:5px 9px;border-radius:5px;white-space:nowrap;font-size:12px;opacity:0;pointer-events:none;transition:opacity .1s;z-index:100000}
 .fm-btn:hover::after{opacity:1}
+/* slider + toggle tooltips use the same bubble as buttons */
+.fm-slider[data-tip]:hover::after,.fm-toggle-track[data-tip]:hover::after{content:attr(data-tip);position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);background:#000;color:#fff;border:1px solid #555;padding:5px 9px;border-radius:5px;white-space:nowrap;font-size:12px;z-index:100000}
+.fm-slider,.fm-toggle-track{position:relative}
 /* thin, flat slider track */
 .fm-slider{-webkit-appearance:none;appearance:none;width:170px;height:3px;background:#444;border-radius:2px;outline:none;cursor:pointer}
 .fm-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;border-radius:50%;background:#4a90d9;border:none;cursor:pointer}
@@ -295,7 +300,7 @@ function buildUI() {
        '<span><kbd>Space</kbd>/<kbd>middle button</kbd>: pan</span>' +
        '<span><kbd>right button</kbd>: erase</span>' +
        '<span><kbd>double right button</kbd>: clear all</span>' +
-       '<span><kbd>X</kbd>: mode</span>' +
+       '<span><kbd>X</kbd>/<kbd>B</kbd>/<kbd>E</kbd>: mode</span>' +
        '<span><kbd>' + MOD + '</kbd>+<kbd>Z</kbd>/<kbd>' + MOD + '</kbd>+<kbd>Y</kbd>: undo/redo</span></span>';
 
   overlay.append(topbar, viewport, statusbar);
@@ -323,9 +328,16 @@ function buildUI() {
 }
 
 /* ------------------------------ state / init ------------------------------ */
+function hideOverlay() {
+  try {
+    if (ui && ui.overlay) ui.overlay.classList.add("fm-hidden");
+    if (ui && ui.loading) ui.loading.classList.add("fm-hidden");
+  } catch (e) {}
+}
+
 async function openEditor(node) {
   buildUI();
-  if (st) return; // already open
+  if (st) { toast("FastMask", "The editor is already open.", "warn"); return; } // already open
 
   const src = getSourceImage(node);
   if (!src) {
@@ -367,6 +379,7 @@ async function openEditor(node) {
     console.error("[FastMask] image load failed:", src, err);
     ui.loading.textContent = "FastMask: failed to load image (" + (src.filename || "?") + ")";
     toast("FastMask", "Failed to load image: " + err, "error");
+    hideOverlay();
     return;
   }
 
@@ -443,6 +456,7 @@ async function openEditor(node) {
   ui.stSize.textContent = fullW + " \u00D7 " + fullH + (f < 1 ? "  (preview " + pw + "\u00D7" + ph + ")" : "");
 
   // restore a previously painted mask from mask_path (if any)
+  const restoreNodeId = node ? node.id : null;
   (async () => {
     const mw = (node.widgets || []).find((w) => w.name === "mask_path");
     if (!mw || !mw.value) return;
@@ -455,7 +469,7 @@ async function openEditor(node) {
         type: "input",
         _t: Date.now(),
       })));
-      if (!st) return; // editor was closed meanwhile
+      if (!st || !node || node.id !== restoreNodeId) return; // editor was closed or switched meanwhile
       mctx.clearRect(0, 0, pw, ph);
       mctx.drawImage(mimg, 0, 0, pw, ph);
       renderHatchAll();
@@ -474,20 +488,22 @@ async function openEditor(node) {
   st.raf = requestAnimationFrame(frame);
   } catch (err) {
     console.error("[FastMask] editor init failed:", err);
+    st = null;
     if (ui) {
       ui.loading.textContent =
         "FastMask init error: " + (err && err.message ? err.message : err);
       ui.loading.classList.remove("fm-hidden");
     }
     toast("FastMask", "Editor init failed: " + (err && err.message ? err.message : err), "error");
+    hideOverlay();
   }
 }
 
 function closeEditor() {
-  if (!st) return;
-  cancelAnimationFrame(st.raf);
+  if (st) cancelAnimationFrame(st.raf);
   st = null;
-  ui.overlay.classList.add("fm-hidden");
+  hideBrushBadge();
+  hideOverlay();
 }
 
 function loadImage(url) {
@@ -549,7 +565,8 @@ function fitView() {
   st.fitScale = s;
   st.view.x = (r.width - st.pw * s) / 2;
   st.view.y = (r.height - st.ph * s) / 2;
-  makeHatch();
+  // No makeHatch() here: zoom/pan is a pure CSS transform, the hatch pattern
+  // lives in canvas pixel space and does not depend on the view.
   applyTransform();
   renderHatchAll();
 }
@@ -563,7 +580,7 @@ function zoomAt(clientX, clientY, factor) {
   st.view.x = mx - (mx - st.view.x) * (s1 / s0);
   st.view.y = my - (my - st.view.y) * (s1 / s0);
   st.view.scale = s1;
-  makeHatch();
+  // No makeHatch() here: see fitView().
   applyTransform();
   renderHatchAll();
 }
@@ -596,6 +613,20 @@ function makeHatch() {
   }
 }
 
+// Canvas 2D filter blur is unsupported on older Safari: detect once and fall
+// back to a sharp mask instead of a silent no-op.
+let _fmFilterBlurSupported = null;
+function filterBlurSupported() {
+  if (_fmFilterBlurSupported !== null) return _fmFilterBlurSupported;
+  try {
+    const c = document.createElement("canvas").getContext("2d");
+    _fmFilterBlurSupported = typeof c.filter === "string";
+  } catch (e) {
+    _fmFilterBlurSupported = false;
+  }
+  return _fmFilterBlurSupported;
+}
+
 function renderHatchRect(r) {
   if (!st || !r) return;
   const h = st.hctx;
@@ -615,7 +646,7 @@ function renderHatchRect(r) {
   h.clip();
   h.clearRect(rx, ry, rw, rh);
 
-  if (bp > 0) {
+  if (bp > 0 && filterBlurSupported()) {
     const m = Math.ceil(bp * 2);
     const sx = Math.max(0, rx - m);
     const sy = Math.max(0, ry - m);
@@ -681,8 +712,15 @@ function sizeCursorLayer() {
   if (!ui || !ui.cursorLayer || !ui.viewport) return;
   const lay = ui.cursorLayer;
   const dpr = Math.max(1, window.devicePixelRatio || 1);
-  const w = Math.max(1, Math.round(ui.viewport.clientWidth * dpr));
-  const h = Math.max(1, Math.round(ui.viewport.clientHeight * dpr));
+  const cw = ui.viewport.clientWidth, ch = ui.viewport.clientHeight;
+  // Skip layout reads when the viewport size did not change.
+  if (sizeCursorLayer._cw === cw && sizeCursorLayer._ch === ch && sizeCursorLayer._dpr === dpr) {
+    updateViewportRect();
+    return;
+  }
+  sizeCursorLayer._cw = cw; sizeCursorLayer._ch = ch; sizeCursorLayer._dpr = dpr;
+  const w = Math.max(1, Math.round(cw * dpr));
+  const h = Math.max(1, Math.round(ch * dpr));
   if (lay.width !== w || lay.height !== h) {
     lay.width = w;
     lay.height = h;
@@ -942,9 +980,6 @@ function pushUndo(entry) {
 }
 
 function undo() {
-  const now = Date.now();
-  if (now - (undo._last || 0) < 200) return;
-  undo._last = now;
   const entry = st.undoStack.pop();
   if (!entry) return;
   const cols = tileCols();
@@ -961,9 +996,6 @@ function undo() {
 }
 
 function redo() {
-  const now = Date.now();
-  if (now - (redo._last || 0) < 200) return;
-  redo._last = now;
   const entry = st.redoStack.pop();
   if (!entry) return;
   const cols = tileCols();
@@ -988,11 +1020,12 @@ function clearAll() {
     for (let tx = 0; tx < cols; tx++) {
       const x = tx * TILE, y = ty * TILE;
       const w = Math.min(TILE, st.pw - x), h = Math.min(TILE, st.ph - y);
-      const d = st.mctx.getImageData(x, y, w, h).data;
+      const img = st.mctx.getImageData(x, y, w, h);
+      const d = img.data;
       let has = false;
       for (let i = 3; i < d.length; i += 4) { if (d[i] !== 0) { has = true; break; } }
       if (has) {
-        entry.tiles.set(ty * cols + tx, st.mctx.getImageData(x, y, w, h));
+        entry.tiles.set(ty * cols + tx, img);
         st.mctx.clearRect(x, y, w, h);
       }
     }
@@ -1139,9 +1172,8 @@ function wireUI() {
   ui.okBtn.addEventListener("click", () => saveAndClose());
   ui.overlay.addEventListener("contextmenu", (e) => e.preventDefault());
   v.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); });
-  v.addEventListener("dblclick", (e) => {
-    if (e.button === 2 && st) { e.preventDefault(); clearAll(); }
-  });
+  // Double right-click clear-all is handled by the timing logic in
+  // pointerdown (350 ms window) - no separate dblclick handler needed.
 
   v.addEventListener("pointerdown", (e) => {
     if (!st) return;
@@ -1149,11 +1181,10 @@ function wireUI() {
     v.setPointerCapture(e.pointerId);
     if (st.sizing || st.panning) return;
     st.suppressFollow = false;
-    const p = toCanvas(e);
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.button === 0) {
-      const p = toCanvas(e);
-      st.cursor.x = p.x; st.cursor.y = p.y; st.cursor.inside = true; st.cursorDirty = true;
+      const ps = toCanvas(e);
+      st.cursor.x = ps.x; st.cursor.y = ps.y; st.cursor.inside = true; st.cursorDirty = true;
       st.sizing = { x: e.clientX, y: e.clientY, size: st.brushFull, blur: st.blurPct, axis: null };
       st.suppressFollow = true;
       return;
@@ -1165,6 +1196,7 @@ function wireUI() {
       return;
     }
     if (st.drawing) return;
+    const p = toCanvas(e);
     if (e.button === 0) { startStroke(p, st.mode); return; }
     if (e.button === 2) {
       const now = Date.now();
@@ -1272,9 +1304,9 @@ function wireUI() {
 let lastUndoMs = 0;
 function onKey(e, down) {
   if (!st) return;
-  if (e.repeat) return;
   const k = e.key;
   const mod = e.ctrlKey || e.metaKey;
+  const isBrushKey = k === "[" || k === "]";
 
   if (down && k === "Enter") { e.preventDefault(); saveAndClose(); return; }
   if (down && k === "Escape") {
@@ -1306,7 +1338,7 @@ function onKey(e, down) {
     return;
   }
   if (mod && k === "0") { e.preventDefault(); fitView(); return; }
-  if (mod && (k === "Delete")) { e.preventDefault(); if (!st.drawing) clearAll(); return; }
+  if (mod && (k === "Delete" || k === "Backspace")) { e.preventDefault(); if (!st.drawing) clearAll(); return; }
 
   if (e.code === "Space") {
     e.preventDefault();
@@ -1321,7 +1353,8 @@ function onKey(e, down) {
     }
     return;
   }
-  if (e.repeat) return;
+  // Allow held-down repeat for brush size keys, block it for toggles.
+  if (e.repeat && !isBrushKey) return;
 
   switch (k.toLowerCase()) {
     case "x":
@@ -1363,6 +1396,14 @@ function onKey(e, down) {
 // full-res Uint8Array/ImageData (RGB = white, A = mask), uploaded as PNG via
 // the ComfyUI /upload/image API (subfolder: fastmask).
 async function buildFullResMask() {
+  const mp = (st.fullW * st.fullH) / 1e6;
+  if (mp > MAX_EXPORT_MP) {
+    const ok = window.confirm(
+      "FastMask: this image is " + st.fullW + "x" + st.fullH + " (" + mp.toFixed(1) +
+      " MP). Full-resolution export may use a lot of memory. Continue?"
+    );
+    if (!ok) throw new Error("export cancelled (image too large)");
+  }
   const full = document.createElement("canvas");
   full.width = st.fullW; full.height = st.fullH;
   const fctx = full.getContext("2d");
@@ -1377,7 +1418,7 @@ async function buildFullResMask() {
   fctx.fillStyle = "#fff";
   fctx.fillRect(0, 0, st.fullW, st.fullH);
   fctx.globalCompositeOperation = "destination-in";
-  if (blurFull > 0) fctx.filter = "blur(" + blurFull + "px)";
+  if (blurFull > 0 && filterBlurSupported()) fctx.filter = "blur(" + blurFull + "px)";
   fctx.drawImage(st.maskCanvas, 0, 0, st.fullW, st.fullH);
   fctx.filter = "none";
   fctx.globalCompositeOperation = "source-over";
@@ -1455,8 +1496,8 @@ async function saveAndClose() {
       if (idx >= 0 && st.node.widgets_values) st.node.widgets_values[idx] = path;
       // ComfyUI's high-level setter also marks the graph dirty / triggers the
       // widget callback so the node picks the new mask path up on next run.
-      try { if (typeof st.node.setWidgetValue === "function") st.node.setWidgetValue("mask_path", path); } catch (e) {}
-      if (w.callback) w.callback(path);
+      try {       if (typeof st.node.setWidgetValue === "function") st.node.setWidgetValue("mask_path", path); } catch (e) {}
+      try { if (w.callback) w.callback.call(w, path); } catch (e) {}
     }
     app.graph.setDirtyCanvas(true, false);
     closeEditor();
@@ -1521,7 +1562,7 @@ function wireImageMaskReset(node) {
 function makeOpenButtonEl(node) {
   const el = document.createElement("button");
   el.type = "button";
-  el.textContent = "Edit Mask";
+  el.textContent = "Edit Mask v" + FM_VERSION;
   el.setAttribute("data-fastmask-open", "1"); // never let hideNativeMaskButtons() hide our own button
   el.style.cssText =
     "display:block;width:100%;height:32px;min-height:32px;max-height:32px;box-sizing:border-box;flex:none;" +
@@ -1537,8 +1578,8 @@ function makeOpenButtonEl(node) {
 // Strip any stale FastMask widget from a node: old canvas buttons that render
 // as a static "FastMask" oval, old DOM widgets, etc. We always re-add exactly
 // ONE fresh button afterwards, so removing everything stale first is safe.
-// Our own widget (fm_open) is preserved; fm_version is now removed (version
-// is shown inside the Edit Mask button).
+// ONLY FastMask widgets are removed here - never touch other extensions'
+// widgets (a broad type-based sweep deleted third-party DOM widgets).
 function stripStaleWidgets(node) {
   const widgets = node.widgets || [];
   let keptFmOpen = false;
@@ -1557,16 +1598,12 @@ function stripStaleWidgets(node) {
     const nm = String(w.name || "").toLowerCase();
     const lb = String(w.label || w.name || "").toLowerCase();
     const elText = (w.element && w.element.textContent) ? w.element.textContent.toLowerCase() : "";
-    const safe = /upload|refresh|browse|choose|load|folder|preview|image/i.test(nm + " " + lb);
     const isFastmask =
       nm.indexOf("fastmask") !== -1 || nm.indexOf("mask editor") !== -1 || nm.indexOf("edit mask") !== -1 ||
+      nm.indexOf("fm_") === 0 ||
       lb.indexOf("fastmask") !== -1 || lb.indexOf("edit mask") !== -1 ||
       elText.indexOf("fastmask") !== -1 || elText.indexOf("edit mask") !== -1;
-    // a stale canvas "button" / DOM widget renders as an oval snapshot on the
-    // canvas (the old FastMask button). Remove any such widget that is NOT a
-    // built-in upload/refresh/preview control.
-    const isStaleButton = (w.type === "button" || w.type === "DOM" || w.type === "custom") && !safe;
-    if (isFastmask || isStaleButton) {
+    if (isFastmask) {
       widgets.splice(i, 1);
       fmLog("previous FastMask widget removed:", w.name || w.label || "(unnamed)");
     }
@@ -1668,9 +1705,16 @@ function alignPreviewTop(node) {
         preview.addEventListener("load", () => alignPreviewTop(node));
       }
       if (!preview._fmTopAlignRO && typeof ResizeObserver === "function") {
-        const ro = new ResizeObserver(() => alignPreviewTop(node));
+        const ro = new ResizeObserver(() => {
+          if (preview._fmAligning) return;
+          preview._fmAligning = true;
+          try { alignPreviewTop(node); } finally {
+            setTimeout(() => { preview._fmAligning = false; }, 0);
+          }
+        });
         ro.observe(preview);
         preview._fmTopAlignRO = ro;
+        trackNodeObserver(node, preview._fmTopAlignRO);
       }
     }
     // top-align every widget container WITHOUT touching display/flex of children.
@@ -1738,6 +1782,7 @@ function moveButtonBelowPreview(node) {
         });
         mo.observe(nodeEl, { childList: true, subtree: true });
         node._fmBelowObs = mo;
+        trackNodeObserver(node, mo);
       } catch (e) {}
     }
     doMove();
@@ -1797,17 +1842,19 @@ function positionBottom(node) {
     } catch (e) {}
     alignPreviewTop(node);
     moveButtonBelowPreview(node);
-    // hide any stale version label or grey pill
-    const nodeEl = wOpen && wOpen.element ? (wOpen.element.closest("[data-node-id]") || document.querySelector(`[data-node-id="${node.id}"]`) || wOpen.element.parentElement) : document.querySelector(`[data-node-id="${node.id}"]`);
-    if (nodeEl) {
-      nodeEl.querySelectorAll("*").forEach((el) => {
-        if (el.id === "fm_open" || (el.closest && el.closest("#fm_open"))) return;
+    // hide any stale version label or grey pill (scoped to the node element,
+    // never a full-document "*" sweep)
+    if (nodeEl && nodeEl.querySelectorAll) {
+      const stale = nodeEl.querySelectorAll("div, span");
+      for (const el of stale) {
+        if (el.id === "fm_open" || (el.closest && el.closest("#fm_open"))) continue;
+        if (el.querySelector && el.querySelector('[data-fastmask-open="1"]')) continue;
         const t = (el.textContent || "").trim();
         if ((t === "FastMask" || t.indexOf("FastMask v") === 0) && el.offsetWidth > 0 && el.offsetWidth < 180 && el.offsetHeight > 0 && el.offsetHeight < 32) {
           // keep the button itself, hide only the old separate label/pill
           if (el.id !== "fm_open") el.style.setProperty("display", "none", "important");
         }
-      });
+      }
     }
   } catch (e) { /* no-op */ }
 }
@@ -1833,6 +1880,122 @@ function findNodePreview(nodeEl) {
     if (area > bestArea) { bestArea = area; best = el; }
   }
   return best;
+}
+
+// Track per-node observers/timers so node removal does not leak them.
+function trackNodeObserver(node, obs) {
+  try {
+    if (!node || !obs) return;
+    node._fmObservers = node._fmObservers || [];
+    if (node._fmObservers.indexOf(obs) === -1) node._fmObservers.push(obs);
+  } catch (e) {}
+}
+
+function fmCleanupNode(node) {
+  try {
+    if (!node) return;
+    if (node._fmBelowObs) { try { node._fmBelowObs.disconnect(); } catch (e) {} node._fmBelowObs = null; }
+    if (node._fmObservers) {
+      for (const o of node._fmObservers) { try { if (o && o.disconnect) o.disconnect(); } catch (e) {} }
+      node._fmObservers = [];
+    }
+    try {
+      const w = (node.widgets || []).find((x) => x.name === "fm_open");
+      const nodeEl = (w && w.element && (w.element.closest("[data-node-id]") || document.querySelector('[data-node-id="' + node.id + '"]')))
+        || document.querySelector('[data-node-id="' + node.id + '"]');
+      const preview = nodeEl ? findNodePreview(nodeEl) : null;
+      const box = preview && preview.parentElement;
+      if (box) {
+        if (box._fmCompTimer) { clearInterval(box._fmCompTimer); box._fmCompTimer = null; }
+        if (box._fmCompRO) { try { box._fmCompRO.disconnect(); } catch (e) {} box._fmCompRO = null; }
+        if (box._fmCompObs) { try { box._fmCompObs.disconnect(); } catch (e) {} box._fmCompObs = null; }
+      }
+    } catch (e) {}
+    if (window.__fmCompSync && window.__fmCompSync[node.id]) {
+      try { delete window.__fmCompSync[node.id]; } catch (e) {}
+    }
+  } catch (e) {}
+}
+
+// Effective source key: a connected IMAGE link wins over the dropdown widget.
+// The old code only watched the dropdown value, so plugging a cable into the
+// input never cleared the stale mask/composite and the preview looked frozen.
+function fmEffectiveSourceKey(node) {
+  try {
+    for (const inp of node.inputs || []) {
+      if (inp.type !== "IMAGE" || !inp.link) continue;
+      const link = app.graph && app.graph.links ? app.graph.links[inp.link] : null;
+      const origin = link ? link.origin_id : "?";
+      let up = "";
+      try {
+        const out = app.nodeOutputs ? app.nodeOutputs[origin] : null;
+        const imgs = (out && out.images) || [];
+        const first = imgs.find((i) => i.type === "output") || imgs[0];
+        if (first) up = (first.subfolder || "") + "/" + (first.filename || "") + ":" + (first.type || "");
+      } catch (e) {}
+      return "link:" + origin + ":" + up;
+    }
+  } catch (e) {}
+  try {
+    const imgW = (node.widgets || []).find((x) => x.name === "image");
+    return "widget:" + String(imgW && imgW.value != null ? imgW.value : "");
+  } catch (e) {}
+  return "widget:";
+}
+
+function fmClearMaskPath(node) {
+  try {
+    const mp = (node.widgets || []).find((x) => x.name === "mask_path");
+    if (mp && mp.value) {
+      mp.value = "";
+      const idx = (node.widgets || []).indexOf(mp);
+      if (idx >= 0 && node.widgets_values) node.widgets_values[idx] = "";
+      if (typeof node.setWidgetValue === "function") { try { node.setWidgetValue("mask_path", ""); } catch (e) {} }
+      if (typeof mp.callback === "function") { try { mp.callback.call(mp, mp.value); } catch (e) {} }
+    }
+  } catch (e) {}
+}
+
+// Live preview: when a cable feeds the input, point the node's DOM preview at
+// the upstream image immediately (no Queue needed). Without this the node kept
+// showing the old dropdown file until the next run.
+function fmSyncLinkPreview(node) {
+  try {
+    if (!node) return;
+    let hasLink = false;
+    try {
+      for (const inp of node.inputs || []) {
+        if (inp.type === "IMAGE" && inp.link) { hasLink = true; break; }
+      }
+    } catch (e) {}
+    if (!hasLink) return;
+    const src = getSourceImage(node);
+    if (!src || !src.filename) return;
+    const url = api.apiURL("/view?" + new URLSearchParams({
+      filename: src.filename,
+      subfolder: src.subfolder || "",
+      type: src.type || "output",
+    }));
+    const w = (node.widgets || []).find((x) => x.name === "fm_open");
+    const nodeEl = (w && w.element && (w.element.closest("[data-node-id]") || document.querySelector('[data-node-id="' + node.id + '"]')))
+      || document.querySelector('[data-node-id="' + node.id + '"]');
+    if (!nodeEl) return;
+    const preview = findNodePreview(nodeEl);
+    if (preview && preview.tagName === "IMG") {
+      const cur = preview.getAttribute("src") || preview.src || "";
+      // Avoid churn: only set when the file identity actually changed.
+      if (cur.indexOf(encodeURIComponent(src.filename)) === -1 && cur.indexOf(src.filename) === -1) {
+        preview.src = url;
+      }
+    } else if (node._fmLegacy) {
+      // Nodes 1 (canvas UI): swap node.imgs to the upstream image.
+      const key = url;
+      if (node._fmLinkPreviewUrl !== key) {
+        node._fmLinkPreviewUrl = key;
+        fmSetLegacyNodePreview(node, url);
+      }
+    }
+  } catch (e) { /* never break the app over cosmetics */ }
 }
 
 // Composite display on the node: the editor's OK button uploads a ready-made
@@ -1945,35 +2108,36 @@ function enableNodeMaskOverlay(node) {
     // ultra-cheap self-heal tick: only ensures the overlay exists, is attached
     // and is positioned (NO image re-fetch unless mask_path changed). This
     // recovers the mask after any ComfyUI DOM re-render that removed it.
-    // ALSO: when the source image (image widget) changes, the previously
-    // painted mask no longer matches the new image - clear mask_path and hide
-    // the stale composite so the old mask does NOT reappear on a new image.
+    // ALSO: when the effective source (cable link OR image widget) changes,
+    // the previously painted mask no longer matches the new image - clear
+    // mask_path and hide the stale composite so the old mask does NOT
+    // reappear on a new image. Live-sync the linked preview too.
     if (!box._fmCompTimer) {
       box._fmCompTimer = setInterval(() => {
         try {
-          const mp = (node.widgets || []).find((x) => x.name === "mask_path");
-          const imgW = (node.widgets || []).find((x) => x.name === "image");
-          const imgVal = imgW ? String(imgW.value == null ? "" : imgW.value) : "";
-          if (box._fmLastImgVal === undefined) {
-            box._fmLastImgVal = imgVal; // first tick: just remember, do not clear
-          } else if (imgVal !== box._fmLastImgVal) {
-            box._fmLastImgVal = imgVal;
+          const key = fmEffectiveSourceKey(node);
+          if (box._fmLastSrcKey === undefined) {
+            box._fmLastSrcKey = key; // first tick: just remember, do not clear
+          } else if (key !== box._fmLastSrcKey) {
+            box._fmLastSrcKey = key;
+            const imgW = (node.widgets || []).find((x) => x.name === "image");
+            const imgVal = imgW ? String(imgW.value == null ? "" : imgW.value) : "";
             // keep the combo list in sync with pasted/uploaded files so the
             // frontend validation accepts the new value
-            if (imgW && imgW.options && Array.isArray(imgW.options.values) && !imgW.options.values.includes(imgVal)) {
+            if (imgW && imgW.options && Array.isArray(imgW.options.values) && imgVal && !imgW.options.values.includes(imgVal)) {
               imgW.options.values.push(imgVal);
             }
-            if (mp && mp.value) {
-              mp.value = "";
-              const idx = (node.widgets || []).indexOf(mp);
-              if (idx >= 0 && node.widgets_values) node.widgets_values[idx] = "";
-              if (typeof node.setWidgetValue === "function") { try { node.setWidgetValue("mask_path", ""); } catch (e) {} }
-              if (typeof mp.callback === "function") { try { mp.callback.call(mp, mp.value); } catch (e) {} }
-            }
+            fmClearMaskPath(node);
             if (box._fmCompOv) box._fmCompOv.style.display = "none";
             lastPath = null;
           }
-          if (!(mp && mp.value)) return;
+          try { fmSyncLinkPreview(node); } catch (e) {}
+          const mpNow = (node.widgets || []).find((x) => x.name === "mask_path");
+          if (!(mpNow && mpNow.value)) {
+            // No mask: hide a stale composite, but keep the live link preview.
+            if (box._fmCompOv) box._fmCompOv.style.display = "none";
+            return;
+          }
           refresh(false);
           try { raisePreviewActions(box); } catch (e) {}
         } catch (e) {}
@@ -1987,6 +2151,7 @@ function enableNodeMaskOverlay(node) {
       const ro = new ResizeObserver(reposition);
       ro.observe(preview);
       box._fmCompRO = ro;
+      trackNodeObserver(node, ro);
     }
     // the fit-rect needs naturalWidth/naturalHeight, which only exist AFTER the
     // preview image has loaded - re-measure then (aspect-correct placement)
@@ -2018,6 +2183,7 @@ function enableNodeMaskOverlay(node) {
       });
       mo.observe(box, { childList: true, subtree: true });
       box._fmCompObs = mo;
+      trackNodeObserver(node, mo);
     }
     refresh(false);
     try { enablePreviewPasteButton(node); } catch (e) {}
@@ -2041,6 +2207,36 @@ function addOpenButton(node) {
   // action both route through node.pasteFile / node.pasteFiles)
   installFastMaskPaste(node);
 
+  // React immediately when a cable is plugged into / unplugged from the IMAGE
+  // input: clear the stale mask and live-sync the preview (the 2s overlay
+  // tick is only a safety net after this).
+  if (!node._fmConnHooked) {
+    node._fmConnHooked = true;
+    node._fmLastSrcKey = fmEffectiveSourceKey(node);
+    const origConn = node.onConnectionsChange;
+    node.onConnectionsChange = function () {
+      const r = origConn ? origConn.apply(this, arguments) : undefined;
+      try {
+        const key = fmEffectiveSourceKey(node);
+        if (key !== node._fmLastSrcKey) {
+          node._fmLastSrcKey = key;
+          fmClearMaskPath(node);
+          try {
+            const w = (node.widgets || []).find((x) => x.name === "fm_open");
+            const nodeEl = (w && w.element && (w.element.closest("[data-node-id]") || document.querySelector('[data-node-id="' + node.id + '"]')))
+              || document.querySelector('[data-node-id="' + node.id + '"]');
+            const preview = nodeEl ? findNodePreview(nodeEl) : null;
+            const box = preview && preview.parentElement;
+            if (box && box._fmCompOv) box._fmCompOv.style.display = "none";
+            if (box) box._fmLastSrcKey = key;
+          } catch (e) {}
+        }
+        fmSyncLinkPreview(node);
+      } catch (e) {}
+      return r;
+    };
+  }
+
   // re-clean on the next frames too: some extensions (e.g. the built-in image
   // upload preview) add their widgets only AFTER the node is configured, so a
   // stale oval button can appear a tick later. Our own fm_open/fm_version are
@@ -2059,16 +2255,24 @@ function addOpenButton(node) {
   // wrongly-typed DOM widgets rendered as static, non-interactive snapshots
   // in this frontend version; a real element always receives pointer events.
   // Nodes 1 (LiteGraph canvas) detection: the Vue (Nodes 2) frontend renders
-  // [data-node-id] wrappers, the canvas UI never does. Decide once, delayed
-  // so Nodes 2 has time to mount its DOM first.
-  setTimeout(() => {
+  // [data-node-id] wrappers, the canvas UI never does. Retry a few times so a
+  // slow-mounting Nodes 2 DOM is not misdetected as legacy forever.
+  const decideLegacy = (tries) => {
     try {
-      if (node._fmLegacy === undefined && !document.querySelector("[data-node-id]")) {
+      if (node._fmLegacy !== undefined) return;
+      if (document.querySelector("[data-node-id]")) {
+        node._fmLegacy = false;
+        return;
+      }
+      if (tries <= 0) {
         node._fmLegacy = true;
         setupLegacyButtonPin(node);
+        return;
       }
+      setTimeout(() => decideLegacy(tries - 1), 500);
     } catch (e) {}
-  }, 500);
+  };
+  decideLegacy(6);
 
   if (typeof node.addDOMWidget === "function") {
     try {
@@ -2625,9 +2829,17 @@ app.registerExtension({
       return r;
     };
 
+    const onRemoved = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function () {
+      try { fmCleanupNode(this); } catch (e) {}
+      const r = onRemoved ? onRemoved.apply(this, arguments) : undefined;
+      return r;
+    };
+
     const getExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
     nodeType.prototype.getExtraMenuOptions = function (_, options) {
       const r = getExtraMenuOptions ? getExtraMenuOptions.apply(this, arguments) : undefined;
+      if (!options || typeof options.unshift !== "function") return r;
       options.unshift({
         content: "Edit Mask",
         callback: () => openEditor(this),
