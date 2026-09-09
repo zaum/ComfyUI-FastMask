@@ -1,7 +1,7 @@
 [project]
 name = "fastmask"
 description = "Simple, fast canvas-based mask editor for ComfyUI: dirty-rect rendering, preview-resolution painting with full-res export, tile-based undo/redo."
-version = "1.9.23"
+version = "1.9.24"
 license = { text = "MIT" }
 dependencies = []
 

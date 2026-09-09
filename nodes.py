@@ -17,9 +17,7 @@ class FastMaskEditor:
     Loads an image from the ComfyUI input directory (dropdown + upload button,
     same widgets/mechanism as LoadImage), outputs both the IMAGE and a MASK.
     Open the FastMask editor from the node button / right-click menu to paint
-    the mask (full resolution on export, fast preview-res painting). An
-    external MASK can be fed into mask_opt (e.g. from another node); it is
-    used while no painted mask_path file is set."""
+    the mask (full resolution on export, fast preview-res painting)."""
 
     @classmethod
     def INPUT_TYPES(s):
@@ -42,13 +40,9 @@ class FastMaskEditor:
                 "mask_path": ("STRING", {"default": ""}),
             },
             # optional IMAGE input: when another node (e.g. LoadImage) output
-            # is connected here, it overrides the dropdown-selected image.
-            # optional MASK input: an external mask (first batch is used,
-            # resized to the image). It applies while mask_path is empty;
-            # once you paint in the editor, the painted file takes over.
+            # is connected here, it overrides the dropdown-selected image
             "optional": {
                 "image_opt": ("IMAGE",),
-                "mask_opt": ("MASK",),
             },
         }
 
@@ -60,8 +54,7 @@ class FastMaskEditor:
     DESCRIPTION = (
         "Image loader + mask editor in one node. Select/upload an image, "
         "open the FastMask editor (button or right-click menu) to paint a "
-        "mask. Outputs IMAGE and MASK (1.0 = masked area). A connected "
-        "mask_opt input is used while no painted mask is set."
+        "mask. Outputs IMAGE and MASK (1.0 = masked area)."
     )
 
     @classmethod
@@ -89,10 +82,10 @@ class FastMaskEditor:
                 pass
         return True
 
-    def load(self, image, mask_path="", image_opt=None, mask_opt=None):
+    def load(self, image, mask_path="", image_opt=None):
         try:
             if image_opt is not None:
-                return self._load_from_tensor(image_opt, mask_path, mask_opt)
+                return self._load_from_tensor(image_opt, mask_path)
 
             img_path = folder_paths.get_annotated_filepath(image)
             img = Image.open(img_path)
@@ -106,7 +99,7 @@ class FastMaskEditor:
             out_image = torch.from_numpy(out_image)[None,]
 
             mask, ui_images = self._load_mask_and_preview(
-                img, (w, h), mask_path, img_path, image, mask_opt
+                img, (w, h), mask_path, img_path, image
             )
             return self._finalize(out_image, mask, ui_images)
         except Exception as e:
@@ -193,7 +186,7 @@ class FastMaskEditor:
         except Exception:
             return None
 
-    def _load_from_tensor(self, image_opt, mask_path="", mask_opt=None):
+    def _load_from_tensor(self, image_opt, mask_path=""):
         """Works from a connected IMAGE tensor (B,H,W,C, 0..1 float)."""
         t = self._tensor_to_hw3(image_opt)
         if t is None:
@@ -203,48 +196,9 @@ class FastMaskEditor:
 
         pil = Image.fromarray((t * 255.0).round().astype(np.uint8))
         mask, ui_images = self._load_mask_and_preview(
-            pil, (w, h), mask_path, None, None, mask_opt
+            pil, (w, h), mask_path, None, None
         )
         return self._finalize(out_image, mask, ui_images)
-
-    @staticmethod
-    def _tensor_to_hw_mask(mask_opt, size):
-        """Normalize any MASK tensor to float32 0..1 (H,W), resized to size.
-
-        Accepts (B,H,W), (H,W) and (B,H,W,1)/(B,1,H,W) variants; upstream
-        masks often differ in resolution (e.g. 64x64 latent masks), so the
-        result is resized with bilinear filtering. Returns None if unusable.
-        """
-        try:
-            import torch as _torch
-
-            w, h = size
-            if isinstance(mask_opt, _torch.Tensor):
-                t = mask_opt.detach().float().cpu()
-            else:
-                t = torch.as_tensor(np.asarray(mask_opt), dtype=torch.float32)
-            while t.ndim > 3:
-                # (B,H,W,1) -> (B,H,W); (B,1,H,W) -> (B,H,W)
-                if t.shape[-1] == 1:
-                    t = t[..., 0]
-                elif t.shape[1] == 1:
-                    t = t[:, 0]
-                else:
-                    t = t[0]
-            if t.ndim == 3:
-                if t.shape[0] < 1:
-                    return None
-                t = t[0]
-            if t.ndim != 2:
-                return None
-            t = t.clamp(0, 1).unsqueeze(0).unsqueeze(0)
-            t = torch.nn.functional.interpolate(
-                t, size=(h, w), mode="bilinear", align_corners=False
-            )
-            return t[0, 0].numpy().astype(np.float32)
-        except Exception as e:
-            print(f"[FastMask] mask_opt normalize failed: {e}")
-            return None
 
     def _source_ui(self, image_value):
         """Build the ui.images reference for the ORIGINAL source image so the
@@ -271,12 +225,9 @@ class FastMaskEditor:
         # No alpha channel (L/RGB mask): use luminance instead of solid white.
         return np.asarray(m.convert("L")).astype(np.float32) / 255.0
 
-    def _load_mask_and_preview(self, img, size, mask_path, img_path, image_value=None, mask_opt=None):
+    def _load_mask_and_preview(self, img, size, mask_path, img_path, image_value=None):
         """Load the mask (mask_path) and decide what to show on the node.
 
-        Precedence: painted mask_path file > connected mask_opt tensor > empty.
-        Once you paint in the editor, the painted file takes over the external
-        input (clear the mask_path widget to go back to the external mask).
         For a file-based image we simply show the ORIGINAL source image on the
         node (reliable, never disappears). When the image comes from a connected
         tensor (no source file) we generate a preview PNG instead.
@@ -292,10 +243,6 @@ class FastMaskEditor:
                     print(f"[FastMask] mask file not found: {mpath}")
             except Exception as e:
                 print(f"[FastMask] mask load failed: {e}")
-        if mask is None and mask_opt is not None:
-            mask = self._tensor_to_hw_mask(mask_opt, (w, h))
-            if mask is not None:
-                print(f"[FastMask] mask: using connected mask_opt input size={w}x{h}")
         if mask is None:
             # No painted mask yet -> empty mask (nothing is masked).
             out_mask = torch.zeros((h, w), dtype=torch.float32)
@@ -374,12 +321,12 @@ class FastMaskEditor:
         return {"ui": {"images": ui_images or []}, "result": (out_image, out_mask)}
 
     @classmethod
-    def IS_CHANGED(s, image, mask_path="", image_opt=None, mask_opt=None, **kwargs):
+    def IS_CHANGED(s, image, mask_path="", image_opt=None, **kwargs):
         # Fast, crash-proof change detection: mtime + size instead of hashing
-        # the whole file on every prompt. Accepts image_opt/mask_opt (tensor
-        # inputs) so a connected upstream image/mask does not raise TypeError;
-        # tensor content itself is tracked by ComfyUI via the link, the widgets
-        # are ignored in that case.
+        # the whole file on every prompt. Accepts image_opt (tensor input) so
+        # a connected upstream image does not raise TypeError; tensor content
+        # itself is tracked by ComfyUI via the link, the dropdown is ignored
+        # in that case.
         try:
             if image_opt is not None:
                 h = "tensor"
@@ -399,8 +346,6 @@ class FastMaskEditor:
                         h += f":{stt.st_mtime_ns}:{stt.st_size}"
                 except Exception:
                     h += f":{mask_path}"
-            elif mask_opt is not None:
-                h += ":mask-tensor"
             return h
         except Exception:
             return str(time.time_ns())

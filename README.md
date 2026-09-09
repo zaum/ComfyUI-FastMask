@@ -24,7 +24,6 @@ After restarting ComfyUI, look for the **`FastMask Editor`** node in the `mask` 
 ## Usage
 
 1. Select an image in the node's `image` dropdown, upload one onto the node, or connect it to **`image_opt`** (a connected image overrides the dropdown).
-2. Optionally connect an external mask to **`mask_opt`** (first batch is used, resized to the image). It applies while no painted mask is set - once you paint in the editor, the painted file takes over (clear the `mask_path` widget to go back to the external mask).
 2. Open the full-screen editor with **Edit Mask**, paint, then press **OK**.
 3. The mask is saved at full resolution into `ComfyUI/input/fastmask/` and **restored** on the next open. A composite preview (image + mask, max. 1024 px JPEG) is uploaded and shown permanently on the node.
 4. Outputs: `IMAGE` (the loaded image) and `MASK` (1.0 = masked area).
