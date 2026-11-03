@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.9.24";
+const FM_VERSION = "1.9.25";
 // Full-res export guard: a W*H canvas plus toBlob can use hundreds of MB.
 const MAX_EXPORT_MP = 64; // megapixels; above this the user must confirm
 
@@ -1474,7 +1474,10 @@ async function saveAndClose() {
       const compBlob = await new Promise((res) => cc.toBlob(res, "image/jpeg", 0.85));
       if (compBlob) {
         const cfd = new FormData();
-        cfd.append("image", compBlob, "fastmask_node" + st.node.id + "_composite.jpg");
+        // name the composite after the MASK file, not the node id: a copied /
+        // pasted node keeps the same mask_path and therefore finds its preview
+        const compName = fmCompositeName(path) || ("fastmask_node" + st.node.id + "_composite.jpg");
+        cfd.append("image", compBlob, compName);
         cfd.append("overwrite", "true");
         cfd.append("type", "input");
         cfd.append("subfolder", "fastmask");
@@ -1900,16 +1903,10 @@ function fmCleanupNode(node) {
       node._fmObservers = [];
     }
     try {
-      const w = (node.widgets || []).find((x) => x.name === "fm_open");
-      const nodeEl = (w && w.element && (w.element.closest("[data-node-id]") || document.querySelector('[data-node-id="' + node.id + '"]')))
-        || document.querySelector('[data-node-id="' + node.id + '"]');
-      const preview = nodeEl ? findNodePreview(nodeEl) : null;
-      const box = preview && preview.parentElement;
-      if (box) {
-        if (box._fmCompTimer) { clearInterval(box._fmCompTimer); box._fmCompTimer = null; }
-        if (box._fmCompRO) { try { box._fmCompRO.disconnect(); } catch (e) {} box._fmCompRO = null; }
-        if (box._fmCompObs) { try { box._fmCompObs.disconnect(); } catch (e) {} box._fmCompObs = null; }
-      }
+      // overlay state lives on the node (the preview panel is replaced by the
+      // Vue frontend on every re-render, so DOM-bound state would leak)
+      fmOverlayTeardown(node);
+      if (node._fmCompOv) { try { node._fmCompOv.remove(); } catch (e) {} node._fmCompOv = null; }
     } catch (e) {}
     if (window.__fmCompSync && window.__fmCompSync[node.id]) {
       try { delete window.__fmCompSync[node.id]; } catch (e) {}
@@ -1998,9 +1995,40 @@ function fmSyncLinkPreview(node) {
   } catch (e) { /* never break the app over cosmetics */ }
 }
 
+// Composite preview file names for a node. The editor uploads the composite as
+// fastmask_comp_<mask file name>.jpg, so a mask file always maps to the same
+// composite - a copied/pasted node (new node id, same mask_path) finds it too.
+// Older versions used fastmask_node<id>_composite.jpg; kept as a fallback.
+function fmCompositeName(maskPath) {
+  const base = String(maskPath || "").split("/").pop().replace(/\.[^.\\/]+$/, "");
+  return base ? "fastmask_comp_" + base + ".jpg" : "";
+}
+
+function fmCompositeCandidates(node, maskPath) {
+  const names = [];
+  const primary = fmCompositeName(maskPath);
+  if (primary) names.push(primary);
+  if (node && node.id != null) names.push("fastmask_node" + node.id + "_composite.jpg");
+  return names;
+}
+
+// Drop every DOM-bound piece of the mask overlay wiring: the tick, the
+// observers and the "wired" flag all belong to ONE preview panel element, and
+// the Vue (Nodes 2) frontend replaces that element on a re-render.
+function fmOverlayTeardown(node) {
+  try {
+    if (!node) return;
+    if (node._fmCompTimer) { clearInterval(node._fmCompTimer); node._fmCompTimer = null; }
+    if (node._fmCompRO) { try { node._fmCompRO.disconnect(); } catch (e) {} node._fmCompRO = null; }
+    if (node._fmCompObs) { try { node._fmCompObs.disconnect(); } catch (e) {} node._fmCompObs = null; }
+    node._fmCompWired = false;
+    node._fmCompBox = null;
+  } catch (e) { /* no-op */ }
+}
+
 // Composite display on the node: the editor's OK button uploads a ready-made
 // composite JPEG (color image + vivid mask, max 1024px) to
-// fastmask/fastmask_node<id>_composite.jpg. The node only ever DISPLAYS that
+// fastmask/fastmask_comp_<mask name>.jpg. The node only ever DISPLAYS that
 // file as an <img> - no per-frame generation, no pixel loops, no timers.
 // Repositioning on resize is layout-only (no re-fetch); a fresh composite is
 // loaded only after the editor's OK button notifies us via __fmCompSync.
@@ -2026,14 +2054,26 @@ function enableNodeMaskOverlay(node) {
     node._fmOverlayTries = 0;
     const box = preview.parentElement;
     if (!box) return;
-    if (box._fmCompWired) return;
-    box._fmCompWired = true;
+    // Nodes 2 (Vue) REPLACES the preview panel element on a re-render
+    // (collapse/expand, widget flow change, ...). Everything below (overlay
+    // img, tick, observers) is bound to that panel, so a changed panel gets a
+    // fresh wiring instead of keeping the dead one - the old code kept the
+    // first wiring forever, which is why the magenta mask disappeared for good
+    // after such a re-render.
+    if (node._fmCompBox && node._fmCompBox !== box) {
+      fmOverlayTeardown(node);
+      // the inline styles that keep the preview top-aligned are lost with the
+      // old panel too, so re-apply them on the new one
+      try { alignPreviewTop(node); } catch (e) {}
+    }
+    node._fmCompBox = box;
+    if (node._fmCompWired) return;
+    node._fmCompWired = true;
 
-    const compName = "fastmask_node" + node.id + "_composite.jpg";
     let lastPath = null;
 
     const reposition = () => {
-      const ov = box._fmCompOv;
+      const ov = node._fmCompOv;
       if (!ov) return;
       // offset chain = layout px, invariant under the workspace zoom transform
       let left = 0, top = 0, nOff = preview;
@@ -2075,51 +2115,91 @@ function enableNodeMaskOverlay(node) {
       const cur = mp && mp.value ? String(mp.value) : null;
       if (!cur) {
         lastPath = null;
-        if (box._fmCompOv) box._fmCompOv.style.display = "none";
+        if (node._fmCompOv) node._fmCompOv.style.display = "none";
         return;
       }
-      if (!box._fmCompOv) {
+      if (!node._fmCompOv) {
         const ov = document.createElement("img");
         ov.className = "fm-node-tint";
         ov.style.cssText = "position:absolute;pointer-events:none;z-index:10;object-fit:fill;";
-        ov.onerror = () => { ov.style.display = "none"; ov._fmFailed = lastPath; }; // no composite saved yet
+        ov._fmSetSrc = (name) => {
+          ov.src = api.apiURL("/view?" + new URLSearchParams({ filename: name, subfolder: "fastmask", type: "input", _t: Date.now() }));
+        };
+        // visibility follows the load result: a 404 must never leave a broken
+        // (0x0) image on top of the real preview
+        ov.onload = () => {
+          if (ov._fmReqMask !== lastPath) return;
+          ov._fmFailed = null;
+          ov.style.display = "block";
+          try { reposition(); } catch (e) {}
+        };
+        // A failed load must never hide the mask for good: first walk the
+        // candidate file names (mask-based name -> legacy node-id name), then
+        // allow a bounded retry from the tick below.
+        ov.onerror = () => {
+          // ignore a late error for a composite that another mask/refresh
+          // already superseded - otherwise the failure is booked to the wrong
+          // mask path and the retry below never matches
+          if (ov._fmReqMask !== lastPath) return;
+          const cands = ov._fmCands || [];
+          if (ov._fmCandIdx + 1 < cands.length) {
+            ov._fmCandIdx++;
+            ov._fmSetSrc(cands[ov._fmCandIdx]);
+            return;
+          }
+          ov.style.display = "none";
+          ov._fmFailed = lastPath;
+          const f = node._fmCompFail || (node._fmCompFail = { path: "", count: 0, at: 0 });
+          if (f.path !== ov._fmFailed) { f.path = ov._fmFailed; f.count = 0; }
+          f.count++;
+          f.at = Date.now();
+        };
         box.style.position = "relative";
         box.appendChild(ov);
-        box._fmCompOv = ov;
+        node._fmCompOv = ov;
       }
-      const ov = box._fmCompOv;
+      const ov = node._fmCompOv;
       // self-heal: if the frontend re-rendered the node and dropped our
       // overlay from the DOM, re-attach it instead of staying invisible
-      if (!ov.isConnected) box.appendChild(ov);
-      ov.style.display = "block";
-      // composite file not saved yet (pre-1.5.0 masks): stay hidden, do not
-      // churn the network every tick; a forced refresh (OK) retries once
+      if (ov.parentElement !== box) box.appendChild(ov);
+      // composite file not saved yet (pre-1.5.0 masks): stay hidden, but retry
+      // a few times with a fresh URL instead of latching the failure forever
       if (ov._fmFailed === cur) {
-        if (!force) { reposition(); return; }
+        const f = node._fmCompFail || (node._fmCompFail = { path: "", count: 0, at: 0 });
+        const retry = force || (f.path === cur && f.count < 5 && Date.now() - f.at > 5000);
+        if (!retry) { ov.style.display = "none"; reposition(); return; }
         ov._fmFailed = null;
+        // the retry must actually re-request the composite, otherwise clearing
+        // the failure flag alone leaves the overlay hidden for good
+        force = true;
       }
       reposition();
       // new timestamped src ONLY when the mask path changed or OK notified us
       if (cur !== lastPath || force || !ov.src) {
+        // hide while the new composite loads so a stale mask never shows
+        if (cur !== lastPath) ov.style.display = "none";
         lastPath = cur;
-        ov.src = api.apiURL("/view?" + new URLSearchParams({ filename: compName, subfolder: "fastmask", type: "input", _t: Date.now() }));
+        ov._fmCands = fmCompositeCandidates(node, cur);
+        ov._fmCandIdx = 0;
+        ov._fmFailed = null;
+        ov._fmReqMask = cur;
+        ov._fmSetSrc(ov._fmCands[0]);
       }
     };
-    // ultra-cheap self-heal tick: only ensures the overlay exists, is attached
-    // and is positioned (NO image re-fetch unless mask_path changed). This
-    // recovers the mask after any ComfyUI DOM re-render that removed it.
-    // ALSO: when the effective source (cable link OR image widget) changes,
-    // the previously painted mask no longer matches the new image - clear
-    // mask_path and hide the stale composite so the old mask does NOT
-    // reappear on a new image. Live-sync the linked preview too.
-    if (!box._fmCompTimer) {
-      box._fmCompTimer = setInterval(() => {
+    // cheap self-heal tick: keeps the overlay attached and positioned, retries
+    // a missing composite, notices a replaced Vue panel and re-syncs the source
+    // image. NO image re-fetch unless mask_path or the source changed.
+    if (!node._fmCompTimer) {
+      node._fmCompTimer = setInterval(() => {
         try {
+          // the preview panel was replaced by a frontend re-render: wire the
+          // new panel instead of ticking on a detached element
+          if (node._fmCompBox !== box || !box.isConnected) { enableNodeMaskOverlay(node); return; }
           const key = fmEffectiveSourceKey(node);
-          if (box._fmLastSrcKey === undefined) {
-            box._fmLastSrcKey = key; // first tick: just remember, do not clear
-          } else if (key !== box._fmLastSrcKey) {
-            box._fmLastSrcKey = key;
+          if (node._fmOvSrcKey === undefined) {
+            node._fmOvSrcKey = key; // first tick: just remember, do not clear
+          } else if (key !== node._fmOvSrcKey) {
+            node._fmOvSrcKey = key;
             const imgW = (node.widgets || []).find((x) => x.name === "image");
             const imgVal = imgW ? String(imgW.value == null ? "" : imgW.value) : "";
             // keep the combo list in sync with pasted/uploaded files so the
@@ -2128,29 +2208,29 @@ function enableNodeMaskOverlay(node) {
               imgW.options.values.push(imgVal);
             }
             fmClearMaskPath(node);
-            if (box._fmCompOv) box._fmCompOv.style.display = "none";
+            if (node._fmCompOv) node._fmCompOv.style.display = "none";
             lastPath = null;
           }
           try { fmSyncLinkPreview(node); } catch (e) {}
           const mpNow = (node.widgets || []).find((x) => x.name === "mask_path");
           if (!(mpNow && mpNow.value)) {
             // No mask: hide a stale composite, but keep the live link preview.
-            if (box._fmCompOv) box._fmCompOv.style.display = "none";
+            if (node._fmCompOv) node._fmCompOv.style.display = "none";
             return;
           }
           refresh(false);
           try { raisePreviewActions(box); } catch (e) {}
         } catch (e) {}
-      }, 2000);
+      }, 700);
     }
     // the editor's saveAndClose calls this right after uploading the composite
     window.__fmCompSync = window.__fmCompSync || {};
     window.__fmCompSync[node.id] = () => refresh(true);
     // cheap layout-only reposition on node resize - no image re-fetch
-    if (!box._fmCompRO && typeof ResizeObserver === "function") {
+    if (!node._fmCompRO && typeof ResizeObserver === "function") {
       const ro = new ResizeObserver(reposition);
       ro.observe(preview);
-      box._fmCompRO = ro;
+      node._fmCompRO = ro;
       trackNodeObserver(node, ro);
     }
     // the fit-rect needs naturalWidth/naturalHeight, which only exist AFTER the
@@ -2162,7 +2242,7 @@ function enableNodeMaskOverlay(node) {
     // re-wire when the preview element itself is replaced (new image loaded).
     // Mutations caused by our own overlay (fm-node-tint img) or our own paste
     // button (fm-preview-paste) are ignored.
-    if (!box._fmCompObs) {
+    if (!node._fmCompObs) {
       const mo = new MutationObserver((muts) => {
         for (const m of muts) {
           if (m.type !== "childList") continue;
@@ -2170,9 +2250,7 @@ function enableNodeMaskOverlay(node) {
           for (const rn of m.removedNodes) if (rn && rn.classList && (rn.classList.contains("fm-node-tint") || rn.classList.contains("fm-preview-paste"))) { try { enablePreviewPasteButton(node); } catch (e) {} return; }
         }
         const np = findNodePreview(nodeEl);
-        if (np && np !== preview) {
-          box._fmCompWired = false;
-          if (box._fmCompRO) { try { box._fmCompRO.disconnect(); } catch (e) {} box._fmCompRO = null; }
+        if (np && (np !== preview || np.parentElement !== box)) {
           enableNodeMaskOverlay(node);
           enablePreviewPasteButton(node);
         } else {
@@ -2182,8 +2260,35 @@ function enableNodeMaskOverlay(node) {
         }
       });
       mo.observe(box, { childList: true, subtree: true });
-      box._fmCompObs = mo;
+      node._fmCompObs = mo;
       trackNodeObserver(node, mo);
+    }
+    // Instant re-wire: the NODE element survives a Vue re-render (only the
+    // preview panel inside it is replaced), so watching it catches the panel
+    // swap immediately instead of waiting for the tick above.
+    if (!node._fmCompNodeObs && typeof MutationObserver === "function") {
+      try {
+        let scheduled = false;
+        const moNode = new MutationObserver(() => {
+          if (scheduled) return;
+          scheduled = true;
+          setTimeout(() => {
+            scheduled = false;
+            try {
+              const curNodeEl = nodeEl.isConnected ? nodeEl : document.querySelector('[data-node-id="' + node.id + '"]');
+              if (!curNodeEl) return;
+              const pv = findNodePreview(curNodeEl);
+              if (!pv) return;
+              // panel replaced -> full re-wire; otherwise just keep it placed
+              if (node._fmCompBox !== pv.parentElement) { enableNodeMaskOverlay(node); return; }
+              reposition();
+            } catch (e) {}
+          }, 50);
+        });
+        moNode.observe(nodeEl, { childList: true, subtree: true });
+        node._fmCompNodeObs = moNode;
+        trackNodeObserver(node, moNode);
+      } catch (e) {}
     }
     refresh(false);
     try { enablePreviewPasteButton(node); } catch (e) {}
@@ -2227,8 +2332,8 @@ function addOpenButton(node) {
               || document.querySelector('[data-node-id="' + node.id + '"]');
             const preview = nodeEl ? findNodePreview(nodeEl) : null;
             const box = preview && preview.parentElement;
-            if (box && box._fmCompOv) box._fmCompOv.style.display = "none";
-            if (box) box._fmLastSrcKey = key;
+            if (node._fmCompOv) node._fmCompOv.style.display = "none";
+            node._fmOvSrcKey = key;
           } catch (e) {}
         }
         fmSyncLinkPreview(node);
@@ -2354,10 +2459,9 @@ function fmShowPastedPreview(node, value) {
       || document.querySelector('[data-node-id="' + node.id + '"]');
     if (!nodeEl) return;
     const preview = findNodePreview(nodeEl);
-    const box = preview && preview.parentElement;
-    if (box && box._fmCompOv) {
-      box._fmCompOv.style.display = "none";
-      box._fmCompOv._fmFailed = null;
+    if (node._fmCompOv) {
+      node._fmCompOv.style.display = "none";
+      node._fmCompOv._fmFailed = null;
     }
     if (preview && preview.tagName === "IMG" && value) {
       const seg = String(value).split("/");
@@ -2742,27 +2846,40 @@ function setupLegacyButtonPin(node) {
 function fmSetNodePreviewComposite(node) {
   try {
     if (!node || !isFastMaskNode(node)) return;
-    const url = api.apiURL("/view?" + new URLSearchParams({
-      filename: "fastmask_node" + node.id + "_composite.jpg",
-      subfolder: "fastmask",
-      type: "input",
-      _t: Date.now(),
-    }));
-    // Nodes 1 (canvas UI): pad the preview with a strip below the image and
-    // swap it into node.imgs so the pinned button gets its own slot
-    if (node._fmLegacy) { fmSetLegacyNodePreview(node, url); return; }
-    const img = new Image();
-    img.onload = () => {
-      try {
-        if (!node.imgs) node.imgs = [];
-        node.imgs[0] = img;
-        if (node.setSizeForImage) { try { node.setSizeForImage(); } catch (e) {} }
-        if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
-        else { try { app.graph.setDirtyCanvas(true, true); } catch (e) {} }
-      } catch (e) {}
+    // try the mask-based composite name first, then the legacy per-node name
+    // (masks painted before the naming change only have the legacy file)
+    const mpW = (node.widgets || []).find((x) => x.name === "mask_path");
+    const cands = fmCompositeCandidates(node, mpW ? mpW.value : "");
+    const loadAt = (i) => {
+      if (i >= cands.length) return; // no composite saved yet - keep the original preview
+      const url = api.apiURL("/view?" + new URLSearchParams({
+        filename: cands[i],
+        subfolder: "fastmask",
+        type: "input",
+        _t: Date.now(),
+      }));
+      if (node._fmLegacy) {
+        // probe first, so the padded legacy loader only receives an existing file
+        const probe = new Image();
+        probe.onload = () => { try { fmSetLegacyNodePreview(node, url); } catch (e) {} };
+        probe.onerror = () => loadAt(i + 1);
+        probe.src = url;
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          if (!node.imgs) node.imgs = [];
+          node.imgs[0] = img;
+          if (node.setSizeForImage) { try { node.setSizeForImage(); } catch (e) {} }
+          if (node.setDirtyCanvas) node.setDirtyCanvas(true, true);
+          else { try { app.graph.setDirtyCanvas(true, true); } catch (e) {} }
+        } catch (e) {}
+      };
+      img.onerror = () => loadAt(i + 1);
+      img.src = url;
     };
-    img.onerror = () => {}; // no composite saved yet - keep the original preview
-    img.src = url;
+    loadAt(0);
   } catch (e) { /* no-op */ }
 }
 
