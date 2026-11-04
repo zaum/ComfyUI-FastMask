@@ -24,7 +24,7 @@ import { api } from "/scripts/api.js";
 const TILE = 256;          // undo/redo tile size (preview px)
 const MAX_PREVIEW = 2048;  // max preview resolution (the result is full-res)
 const MAX_UNDO = 40;
-const FM_VERSION = "1.9.25";
+const FM_VERSION = "1.9.27";
 // Full-res export guard: a W*H canvas plus toBlob can use hundreds of MB.
 const MAX_EXPORT_MP = 64; // megapixels; above this the user must confirm
 
@@ -106,6 +106,12 @@ const CSS = `
    buttons exactly. Only the extra gap and the busy state are ours. */
 .fm-preview-box{position:relative}
 .fm-preview-paste.fm-extra-gap{margin-right:4px}
+.fm-preview-paste svg.fm-paste-svg{width:16px;height:16px;display:block;flex:none;pointer-events:none}
+/* our own node preview: only used when the frontend renders none (dropdown
+   workflow on the newer Vue frontend), so the mask overlay/paste button have
+   a real element to attach to */
+.fm-node-preview-wrap{position:relative;width:100%;min-width:0;flex:none;overflow:hidden;border-radius:6px;background:#0b1d24}
+.fm-node-preview{display:block;width:100%;height:auto;object-fit:contain;object-position:left top;pointer-events:none}
 .fm-preview-paste.fm-busy{opacity:.5;cursor:wait}
 /* fallback floating button (only when the native .actions bar is missing):
    instant show/hide like the native bar (no transition delay) */
@@ -166,12 +172,22 @@ function iconErase() {
 function iconFit() {
   return svgIcon('<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>');
 }
-// Paste icon for the node preview hover button: the EXACT same pictogram as
-// the right-click "Paste Image" menu action (lucide--clipboard-paste), drawn
-// inverse through the inherited native button colors (text-base-background on
+// Paste icon for the node preview hover button: the lucide clipboard-paste
+// pictogram (the same one the frontend's "Paste Image" action uses), drawn in
+// the inherited native button color (text-base-background on
 // bg-base-foreground, same as the native download button next to it).
+// An INLINE SVG is used on purpose: the old version reused the frontend's
+// Tailwind icon utility (`<i class="icon-[lucide--clipboard-paste]">`), but
+// the current frontend build no longer generates that class, so the <i> stayed
+// empty and the button rendered as a blank square.
 function iconPaste() {
-  return '<i class="icon-[lucide--clipboard-paste] size-4" aria-hidden="true"></i>';
+  return '<svg class="fm-paste-svg" xmlns="http://www.w3.org/2000/svg" width="16" height="16" ' +
+    'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M11 14h10"/><path d="M16 4h2a2 2 0 0 1 2 2v1.344"/>' +
+    '<path d="m17 18 4-4-4-4"/>' +
+    '<path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 1.793-1.113"/>' +
+    '<rect x="8" y="2" width="8" height="4" rx="1"/></svg>';
 }
 // Fallback copy of the native preview action button classes (frontend 1.49.6,
 // h-8 = 32px tall, 16px icon). Used only when the native download button has
@@ -1885,6 +1901,110 @@ function findNodePreview(nodeEl) {
   return best;
 }
 
+// Source image of the node: a connected IMAGE input wins over the dropdown.
+function fmPreviewSource(node) {
+  try {
+    const src = (typeof getSourceImage === "function") ? getSourceImage(node) : null;
+    if (src && src.filename) {
+      return { filename: src.filename, subfolder: src.subfolder || "", type: src.type || "output" };
+    }
+  } catch (e) {}
+  try {
+    const imgW = (node.widgets || []).find((x) => x.name === "image");
+    const val = imgW && imgW.value != null ? String(imgW.value) : "";
+    if (val) return { filename: val, subfolder: "", type: "input" };
+  } catch (e) {}
+  return null;
+}
+
+// Frontend 1.58+/0.44+ only renders a node preview when the IMAGE input is
+// wired to an upstream node; for the plain dropdown workflow the node keeps an
+// EMPTY preview area, so findNodePreview() finds nothing. The mask overlay,
+// the composite tint and the paste button all need a preview element, so draw
+// one ourselves in that case (it looks like the native panel and disappears as
+// soon as the frontend renders its own preview).
+function fmEnsureNodePreview(node) {
+  try {
+    if (!node || node._fmLegacy) return null; // canvas UI draws node.imgs itself
+    const nodeEl = document.querySelector('[data-node-id="' + node.id + '"]');
+    if (!nodeEl) return null;
+    // our own previews may be duplicated by a frontend re-render: keep one
+    const mine = [...nodeEl.querySelectorAll("img.fm-node-preview")];
+    // does the FRONTEND render a preview of its own (linked input / after a
+    // run)? then ours must go, otherwise the node shows the image twice
+    const native = [...nodeEl.querySelectorAll("img, canvas")].find((e) =>
+      !e.closest("#fm_open") &&
+      !e.classList.contains("fm-node-preview") &&
+      !e.classList.contains("fm-node-tint") &&
+      ((e.tagName === "IMG" && e.src && e.src.indexOf("/view") !== -1) || e.tagName === "CANVAS")
+    );
+    if (native) {
+      for (const m of mine) { try { const p = m.parentElement; if (p) p.remove(); } catch (e) {} }
+      node._fmOwnPreview = null;
+      return native;
+    }
+    const src = fmPreviewSource(node);
+    if (!src) return null;
+    const url = api.apiURL("/view?" + new URLSearchParams({
+      filename: src.filename,
+      subfolder: src.subfolder,
+      type: src.type,
+    }));
+    let img = node._fmOwnPreview && node._fmOwnPreview.isConnected ? node._fmOwnPreview : null;
+    if (!img) img = mine.find((m) => m.parentElement && m.parentElement.classList.contains("fm-node-preview-wrap")) || mine[0] || null;
+    for (const m of mine) { if (m !== img) { try { const p = m.parentElement; if (p) p.remove(); } catch (e) {} } }
+    if (img && img.isConnected) {
+      node._fmOwnPreview = img;
+      // follow the dropdown / the upstream link without re-creating the DOM
+      if (img.getAttribute("data-fm-src") !== url) {
+        img.setAttribute("data-fm-src", url);
+        img.src = url;
+      }
+      return img;
+    }
+    try { nodeEl.querySelectorAll("img.fm-node-preview").forEach((m) => { if (m.parentElement) m.parentElement.remove(); }); } catch (e) {}
+    const grid = nodeEl.querySelector(".lg-node-widgets");
+    // Prefer the (empty) area the frontend reserves for the image widget. That
+    // area is a subgrid ROW whose only child is the preview frame - the child is
+    // what spans the full node width, a new element inside the grid row would
+    // land in a min-content column and collapse to a few pixels.
+    let host = null, hostH = 120, emptyRow = null;
+    if (grid) {
+      for (const row of grid.children) {
+        const h = row.getBoundingClientRect().height;
+        if (h >= hostH && !row.querySelector("img, canvas")) { emptyRow = row; hostH = h; }
+      }
+    }
+    if (emptyRow) {
+      const kid = emptyRow.firstElementChild;
+      host = (kid && kid.getBoundingClientRect().width >= 60) ? kid : emptyRow;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "fm-node-preview-wrap";
+    // the reserved preview area is a CSS SUBGRID row: without an explicit
+    // full-span the new element becomes a grid item in the min-content column
+    // and collapses to a few pixels
+    try {
+      wrap.style.setProperty("grid-column", "1 / -1", "important");
+      wrap.style.setProperty("grid-row", "auto", "important");
+      wrap.style.setProperty("width", "100%", "important");
+      wrap.style.setProperty("min-width", "0", "important");
+    } catch (e) {}
+    const el = document.createElement("img");
+    el.className = "fm-node-preview";
+    el.setAttribute("data-fm-src", url);
+    el.draggable = false;
+    el.src = url;
+    wrap.appendChild(el);
+    if (host) { host.appendChild(wrap); }
+    else if (grid && grid.parentElement) grid.parentElement.insertBefore(wrap, grid.nextSibling);
+    else return null;
+    node._fmOwnPreview = el;
+    try { wrap._fmBox = true; } catch (e) {}
+    return el;
+  } catch (e) { return null; }
+}
+
 // Track per-node observers/timers so node removal does not leak them.
 function trackNodeObserver(node, obs) {
   try {
@@ -2039,8 +2159,12 @@ function enableNodeMaskOverlay(node) {
     const wrapper = w.element.closest(".comfy-widget") || w.element;
     const nodeEl = wrapper.closest("[data-node-id]") || document.querySelector(`[data-node-id="${node.id}"]`) || wrapper.parentElement;
     if (!nodeEl) return;
-    const preview = findNodePreview(nodeEl);
+    let preview = findNodePreview(nodeEl);
     if (!preview) {
+      // no native preview yet (Images 2 frontend without a wired IMAGE input):
+      // draw our own and re-enter once it is in the DOM
+      preview = fmEnsureNodePreview(node);
+      if (preview) { setTimeout(() => enableNodeMaskOverlay(node), 60); return; }
       // Give up after ~10 attempts (~9s): the preview may never render (e.g.
       // frontend re-layout), an endless 900ms retry loop would just churn.
       node._fmOverlayTries = (node._fmOverlayTries || 0) + 1;
@@ -2211,6 +2335,8 @@ function enableNodeMaskOverlay(node) {
             if (node._fmCompOv) node._fmCompOv.style.display = "none";
             lastPath = null;
           }
+          // keep our own preview (dropdown workflow) in sync with the source
+          try { fmEnsureNodePreview(node); } catch (e) {}
           try { fmSyncLinkPreview(node); } catch (e) {}
           const mpNow = (node.widgets || []).find((x) => x.name === "mask_path");
           if (!(mpNow && mpNow.value)) {
@@ -2680,7 +2806,7 @@ function enablePreviewPasteButton(node) {
       return;
     }
     node._fmPasteTries = 0;
-    const preview = findNodePreview(nodeEl);
+    const preview = findNodePreview(nodeEl) || fmEnsureNodePreview(node);
     if (!preview) {
       node._fmPasteTries = (node._fmPasteTries || 0) + 1;
       if (node._fmPasteTries <= 10) setTimeout(() => enablePreviewPasteButton(node), 900);
@@ -2688,6 +2814,12 @@ function enablePreviewPasteButton(node) {
     }
     const box = preview.parentElement;
     if (!box) return;
+    // a frontend re-render / preview swap can leave a second button behind
+    try {
+      nodeEl.querySelectorAll(".fm-preview-paste").forEach((b) => {
+        if (b !== box._fmPasteBtn) b.remove();
+      });
+    } catch (e) {}
     const actions = findNativeActions(box);
     const native = findNativeDownloadBtn(box);
     if (actions) raisePreviewActions(box);
@@ -2712,8 +2844,24 @@ function enablePreviewPasteButton(node) {
       } catch (e) {}
       return;
     }
-    const nb = document.createElement("button");
-    nb.type = "button";
+    // Clone the native download button's element (classes, inline style, all
+    // attributes) so the paste button inherits EXACTLY the same look as its
+    // neighbours in every theme/build instead of relying on our class fallback.
+    let nb;
+    if (native && native.cloneNode) {
+      try {
+        nb = native.cloneNode(false);
+        nb.removeAttribute("id");
+        nb.removeAttribute("disabled");
+        nb.removeAttribute("title");
+        nb.removeAttribute("aria-label");
+        nb.removeAttribute("aria-describedby");
+      } catch (e) { nb = null; }
+    }
+    if (!nb) {
+      nb = document.createElement("button");
+      nb.type = "button";
+    }
     nb._fmNativeCls = btnCls;
     nb.innerHTML = iconPaste();
     nb.title = "Paste image from clipboard";
