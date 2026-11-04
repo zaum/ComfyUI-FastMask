@@ -182,7 +182,7 @@ function iconFit() {
 // empty and the button rendered as a blank square.
 function iconPaste() {
   return '<svg class="fm-paste-svg" xmlns="http://www.w3.org/2000/svg" width="16" height="16" ' +
-    'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" ' +
     'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M11 14h10"/><path d="M16 4h2a2 2 0 0 1 2 2v1.344"/>' +
     '<path d="m17 18 4-4-4-4"/>' +
@@ -2874,6 +2874,11 @@ function enablePreviewPasteButton(node) {
     });
     if (actions) {
       nb.className = "fm-preview-paste fm-extra-gap " + btnCls;
+      // Force white background to override ComfyUI's theme (bg-base-foreground
+      // resolves to gray in dark themes). The SVG stroke is already 'white'.
+      nb.style.background = "white";
+      nb.style.color = "currentColor";
+      nb.style.transition = "background 0.15s";
       actions.insertBefore(nb, actions.firstChild);
     } else {
       // fallback: floating clone left of the native download button
@@ -2882,6 +2887,10 @@ function enablePreviewPasteButton(node) {
       nb.className = "fm-preview-paste fm-fallback " + btnCls;
       placeFallbackBtn(box, nb, native);
       box.appendChild(nb);
+      // Also override in fallback path
+      nb.style.background = "white";
+      nb.style.color = "currentColor";
+      nb.style.transition = "background 0.15s";
     }
     box._fmPasteBtn = nb;
   } catch (e) { /* never break the app over cosmetics */ }
